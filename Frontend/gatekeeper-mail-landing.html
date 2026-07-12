@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gatekeeper Mail — Sua caixa de entrada só abre para quem você conhece</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --navy-deep:#0F1B2D;
+    --navy-surface:#16273F;
+    --navy-line:#2A3E58;
+    --bone:#EDEAE1;
+    --bone-dim:#B9C0C9;
+    --brass:#C9A24B;
+    --sage:#5C8577;
+    --alert:#B5583C;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:var(--navy-deep);
+    color:var(--bone);
+    font-family:'IBM Plex Sans', sans-serif;
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{
+    font-family:'Source Serif 4', serif;
+    font-weight:600;
+    margin:0;
+    color:var(--bone);
+  }
+  .eyebrow{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:0.72rem;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--brass);
+    margin-bottom:14px;
+    display:block;
+  }
+  a{color:inherit;}
+  .wrap{max-width:1100px;margin:0 auto;padding:0 28px;}
+  /* NAV */
+  nav.top{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:22px 28px;border-bottom:1px solid var(--navy-line);
+  }
+  .brand{display:flex;align-items:center;gap:10px;font-family:'Source Serif 4',serif;font-size:1.15rem;font-weight:600;}
+  .brand svg{flex-shrink:0;}
+  nav.top .links{display:flex;gap:32px;font-size:0.92rem;color:var(--bone-dim);}
+  nav.top .links a{text-decoration:none;transition:color .2s;}
+  nav.top .links a:hover{color:var(--brass);}
+  /* HERO */
+  header.hero{padding:96px 28px 80px;text-align:left;}
+  .hero-grid{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1.1fr 0.9fr;gap:56px;align-items:center;}
+  .hero h1{font-size:clamp(2.1rem,4vw,3.15rem);line-height:1.15;letter-spacing:-0.01em;}
+  .hero p.lead{font-size:1.08rem;color:var(--bone-dim);max-width:46ch;margin:24px 0 34px;}
+  .cta-row{display:flex;gap:16px;flex-wrap:wrap;align-items:center;}
+  .btn{
+    display:inline-block;padding:14px 28px;border-radius:2px;
+    font-size:0.95rem;font-weight:500;text-decoration:none;
+    border:1px solid transparent;cursor:pointer;transition:all .2s;
+    font-family:'IBM Plex Sans',sans-serif;
+  }
+  .btn-primary{background:var(--brass);color:var(--navy-deep);}
+  .btn-primary:hover{background:#dcb562;}
+  .btn-ghost{border-color:var(--navy-line);color:var(--bone);background:transparent;}
+  .btn-ghost:hover{border-color:var(--brass);color:var(--brass);}
+  .microcopy{font-size:0.82rem;color:var(--bone-dim);margin-top:14px;}
+
+  /* GATE ILLUSTRATION */
+  .gate-stage{position:relative;height:340px;}
+  .gate-frame{width:100%;height:100%;}
+  .status-pill{
+    position:absolute;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;
+    letter-spacing:.06em;padding:5px 10px;border-radius:20px;text-transform:uppercase;
+  }
+  .pill-known{top:8%;left:2%;background:rgba(92,133,119,0.18);color:var(--sage);border:1px solid var(--sage);}
+  .pill-unknown{bottom:10%;right:0%;background:rgba(181,88,60,0.16);color:var(--alert);border:1px solid var(--alert);}
+
+  /* SECTION SHARED */
+  section{padding:88px 28px;border-top:1px solid var(--navy-line);}
+  section .kicker-row{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;flex-wrap:wrap;margin-bottom:52px;}
+  section h2{font-size:clamp(1.6rem,3vw,2.15rem);max-width:20ch;}
+  section .section-note{color:var(--bone-dim);max-width:38ch;font-size:0.95rem;}
+
+  /* COMPARISON */
+  .compare{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--navy-line);}
+  .compare > div{padding:38px 34px;}
+  .compare .old{border-right:1px solid var(--navy-line);}
+  .compare .tag{font-family:'IBM Plex Mono',monospace;font-size:0.7rem;letter-spacing:.1em;text-transform:uppercase;}
+  .compare .old .tag{color:var(--alert);}
+  .compare .new .tag{color:var(--sage);}
+  .compare h3{font-size:1.25rem;margin:14px 0 16px;}
+  .compare p{color:var(--bone-dim);font-size:0.95rem;margin:0;}
+
+  /* STEPS */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:2px;background:var(--navy-line);}
+  .step{background:var(--navy-deep);padding:36px 30px;}
+  .step .num{font-family:'IBM Plex Mono',monospace;color:var(--brass);font-size:0.85rem;letter-spacing:.08em;}
+  .step h3{font-size:1.15rem;margin:16px 0 10px;}
+  .step p{color:var(--bone-dim);font-size:0.92rem;margin:0;}
+
+  /* AUDIENCE */
+  .audience{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;}
+  .aud-card{border:1px solid var(--navy-line);padding:30px 26px;background:var(--navy-surface);}
+  .aud-card h3{font-size:1.05rem;margin-bottom:10px;}
+  .aud-card p{color:var(--bone-dim);font-size:0.9rem;margin:0;}
+
+  /* WAITLIST */
+  .waitlist{background:var(--navy-surface);text-align:center;}
+  .waitlist .wrap{max-width:560px;}
+  .waitlist h2{margin-bottom:14px;}
+  .waitlist p.section-note{margin:0 auto 34px;}
+  form.signup{display:flex;gap:10px;max-width:440px;margin:0 auto;}
+  form.signup input{
+    flex:1;padding:14px 16px;border:1px solid var(--navy-line);background:var(--navy-deep);
+    color:var(--bone);border-radius:2px;font-size:0.95rem;font-family:'IBM Plex Sans',sans-serif;
+  }
+  form.signup input:focus{outline:2px solid var(--brass);outline-offset:1px;}
+  form.signup button{white-space:nowrap;}
+  .form-success{display:none;color:var(--sage);font-size:0.92rem;margin-top:16px;}
+  .form-success.show{display:block;}
+
+  footer{padding:44px 28px;text-align:center;color:var(--bone-dim);font-size:0.82rem;border-top:1px solid var(--navy-line);}
+  footer p{max-width:60ch;margin:0 auto 8px;}
+
+  @media (max-width:820px){
+    .hero-grid{grid-template-columns:1fr;}
+    .gate-stage{height:260px;order:-1;}
+    .compare{grid-template-columns:1fr;}
+    .compare .old{border-right:none;border-bottom:1px solid var(--navy-line);}
+    .steps{grid-template-columns:1fr;}
+    .audience{grid-template-columns:1fr;}
+    form.signup{flex-direction:column;}
+    nav.top .links{display:none;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="brand">
+    <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+      <path d="M13 2L23 6.5V12.5C23 18.5 19 22.8 13 24C7 22.8 3 18.5 3 12.5V6.5L13 2Z" stroke="#C9A24B" stroke-width="1.4"/>
+      <path d="M9 13L12 16L17.5 9.5" stroke="#C9A24B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Gatekeeper Mail
+  </div>
+  <div class="links">
+    <a href="#como-funciona">Como funciona</a>
+    <a href="#para-quem">Para quem é</a>
+    <a href="#lista">Lista de espera</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="hero-grid">
+    <div>
+      <span class="eyebrow">Proteção preventiva de e-mail</span>
+      <h1>Sua caixa de entrada só abre para quem você conhece.</h1>
+      <p class="lead">Os filtros tradicionais deixam o remetente entrar e só reagem depois que o estrago já começou. O Gatekeeper Mail inverte isso: por padrão, ninguém desconhecido entra — você decide quem passa da portaria.</p>
+      <div class="cta-row">
+        <a href="#lista" class="btn btn-primary">Entrar na lista de espera</a>
+        <a href="#como-funciona" class="btn btn-ghost">Ver como funciona</a>
+      </div>
+      <p class="microcopy">Em desenvolvimento — vagas limitadas para o grupo piloto.</p>
+    </div>
+
+    <div class="gate-stage">
+      <svg class="gate-frame" viewBox="0 0 360 340" xmlns="http://www.w3.org/2000/svg">
+        <!-- posts -->
+        <rect x="60" y="40" width="10" height="260" fill="#2A3E58"/>
+        <rect x="290" y="40" width="10" height="260" fill="#2A3E58"/>
+        <rect x="50" y="30" width="30" height="14" fill="#2A3E58"/>
+        <rect x="280" y="30" width="30" height="14" fill="#2A3E58"/>
+        <!-- gate leaves -->
+        <g>
+          <rect x="80" y="60" width="90" height="220" fill="none" stroke="#5C8577" stroke-width="2"/>
+          <line x1="80" y1="80" x2="170" y2="80" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="120" x2="170" y2="120" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="160" x2="170" y2="160" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="200" x2="170" y2="200" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="240" x2="170" y2="240" stroke="#5C8577" stroke-width="1.4"/>
+        </g>
+        <g>
+          <rect x="190" y="60" width="90" height="220" fill="none" stroke="#B5583C" stroke-width="2" opacity="0.55"/>
+          <line x1="190" y1="80" x2="280" y2="80" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="120" x2="280" y2="120" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="160" x2="280" y2="160" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="200" x2="280" y2="200" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="240" x2="280" y2="240" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+        </g>
+        <!-- known figure passing through (left) -->
+        <circle cx="125" cy="30" r="9" fill="#5C8577"/>
+        <rect x="118" y="42" width="14" height="26" rx="4" fill="#5C8577"/>
+        <!-- unknown figure blocked (right) -->
+        <circle cx="235" cy="310" r="9" fill="#B5583C"/>
+        <rect x="228" y="322" width="14" height="10" rx="4" fill="#B5583C"/>
+      </svg>
+      <span class="status-pill pill-known">Contato conhecido → entra direto</span>
+      <span class="status-pill pill-unknown">Desconhecido → fica na quarentena</span>
+    </div>
+  </div>
+</header>
+
+<section id="como-funciona">
+  <div class="wrap">
+    <div class="kicker-row">
+      <h2>A lógica é simples: você decide quem bate na porta.</h2>
+      <p class="section-note">Sem varredura de vírus, sem tentar adivinhar quem é golpe. Só entra quem está na sua lista.</p>
+    </div>
+    <div class="compare">
+      <div class="old">
+        <span class="tag">Modelo tradicional</span>
+        <h3>Deixa entrar, depois reage</h3>
+        <p>O antivírus comum funciona como um segurança que só age depois que o suspeito já entrou, se misturou aos convidados e começou a causar dano. Golpes novos, feitos com IA, passam despercebidos até ser tarde.</p>
+      </div>
+      <div class="new">
+        <span class="tag">Gatekeeper Mail</span>
+        <h3>Verifica antes de abrir a porta</h3>
+        <p>Todo remetente desconhecido fica retido numa área separada, sem tocar sua caixa principal. Você decide, com um toque, quem entra — como já faz na agenda de contatos do celular.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker-row">
+      <h2>Como funciona na prática</h2>
+    </div>
+    <div class="steps">
+      <div class="step">
+        <span class="num">01</span>
+        <h3>Conectar sua conta</h3>
+        <p>Você conecta o e-mail com uma chave de acesso específica do aplicativo — nunca a sua senha principal.</p>
+      </div>
+      <div class="step">
+        <span class="num">02</span>
+        <h3>Revisar sua lista</h3>
+        <p>O app sugere quem você já conhece pelo histórico. Você aprova em lote ou remetente por remetente.</p>
+      </div>
+      <div class="step">
+        <span class="num">03</span>
+        <h3>Ficar protegido</h3>
+        <p>Desconhecidos ficam retidos numa área separada. Você lê em ambiente seguro antes de decidir liberar ou bloquear.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="para-quem">
+  <div class="wrap">
+    <div class="kicker-row">
+      <h2>Feito para quem lida com dados sensíveis de terceiros</h2>
+      <p class="section-note">Um golpe de e-mail bem-sucedido custa mais do que dinheiro — custa confiança e responsabilidade civil.</p>
+    </div>
+    <div class="audience">
+      <div class="aud-card">
+        <h3>Advogados</h3>
+        <p>Sigilo profissional e prazos processuais não podem depender de sorte contra phishing.</p>
+      </div>
+      <div class="aud-card">
+        <h3>Médicos e clínicas</h3>
+        <p>Dados de pacientes exigem cuidado redobrado — e a rotina não deixa tempo para configurar filtros complexos.</p>
+      </div>
+      <div class="aud-card">
+        <h3>Contadores e escritórios</h3>
+        <p>Boletos falsos e e-mails clonados de instituições financeiras são o golpe mais comum contra o seu setor.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="waitlist" id="lista">
+  <div class="wrap">
+    <h2>Quero blindar meu e-mail</h2>
+    <p class="section-note">Entre na lista de espera do grupo piloto. Sem custo, sem compromisso.</p>
+    <form class="signup" id="signupForm">
+      <input type="email" id="emailInput" name="email" placeholder="seu.email@exemplo.com.br" required>
+      <button type="submit" class="btn btn-primary">Entrar na lista</button>
+    </form>
+    <p class="form-success" id="formSuccess">Recebido — você está na lista. Entraremos em contato em breve.</p>
+    <p class="form-success" id="formError" style="color:#B5583C;">Não deu certo agora. Tente de novo em instantes.</p>
+  </div>
+</section>
+
+<footer>
+  <p>Gatekeeper Mail é um projeto em fase de validação. Esta página existe para medir interesse antes do desenvolvimento do produto completo — nenhum serviço está ativo ainda.</p>
+</footer>
+
+<script>
+  // ============================================================
+  // PASSO OBRIGATÓRIO ANTES DE PUBLICAR: cole aqui o endereço do
+  // seu formulário do Formspree (veja o passo a passo enviado no chat).
+  // Fica assim, com o seu código no lugar de "SEU_CODIGO_AQUI":
+  //   const FORM_ENDPOINT = "https://formspree.io/f/SEU_CODIGO_AQUI";
+  // ============================================================
+  const FORM_ENDPOINT = "";
+
+  document.getElementById('signupForm').addEventListener('submit', function(e){
+    e.preventDefault();
+    const form = document.getElementById('signupForm');
+    const successMsg = document.getElementById('formSuccess');
+    const errorMsg = document.getElementById('formError');
+    successMsg.classList.remove('show');
+    errorMsg.classList.remove('show');
+
+    if (!FORM_ENDPOINT) {
+      // Ainda não configurado — mostra sucesso apenas na tela, para você
+      // testar a aparência antes de ligar a captura de e-mails de verdade.
+      successMsg.classList.add('show');
+      form.reset();
+      return;
+    }
+
+    fetch(FORM_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json' },
+      body: new FormData(form)
+    }).then(function(response){
+      if (response.ok) {
+        successMsg.classList.add('show');
+        form.reset();
+      } else {
+        errorMsg.classList.add('show');
+      }
+    }).catch(function(){
+      errorMsg.classList.add('show');
+    });
+  });
+</script>
+
+</body>
+</html>
