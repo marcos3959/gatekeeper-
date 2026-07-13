@@ -1,0 +1,5 @@
+RESEND_API_KEY=re_EM3HFYvu_5EUbJzi8VV8krxtRuvwHs4Xn
+
+DATABASE_URL=postgresql://postgres.ophfyibmrqirdulpmtpr:ReescrveAi2026@aws-1-sa-east-1.pooler.supabase.com:5432/postgres
+
+NOTIFY_EMAIL=olegnaloc39@gmail.com
