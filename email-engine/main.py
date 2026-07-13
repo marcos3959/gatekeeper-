@@ -104,6 +104,29 @@ def test_connection():
                 pass
 
 
+@app.route("/list-folders", methods=["GET"])
+def list_folders():
+    """Rota de diagnóstico, somente leitura: mostra como o servidor nomeia as pastas."""
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, pastas = imap.list()
+        pastas_legiveis = [p.decode("utf-8", errors="replace") for p in pastas] if status == "OK" else []
+        return jsonify({"ok": True, "status": status, "pastas_no_servidor": pastas_legiveis})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/organize", methods=["GET"])
 def organize():
     """
