@@ -69,11 +69,12 @@ def signup():
         }), 500
 
     # Envia e-mail de confirmação para quem se cadastrou (via Resend)
-    #    "onboarding@resend.dev" funciona sem precisar verificar domínio próprio —
-    #    ótimo para esta fase de teste. Depois, troque pelo seu domínio verificado.
+    #    "onboarding@resend.dev" funciona sem precisar verificar domínio próprio,
+    #    MAS só entrega para o e-mail que você usou para criar a conta no Resend,
+    #    até que um domínio próprio seja verificado. Ver Resend > Domains.
     if RESEND_API_KEY:
         try:
-            requests.post(
+            resend_resp = requests.post(
                 "https://api.resend.com/emails",
                 headers={
                     "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -90,13 +91,15 @@ def signup():
                 },
                 timeout=10,
             )
-        except requests.RequestException:
-            pass  # não travar o cadastro por causa do e-mail de confirmação
+            if resend_resp.status_code >= 400:
+                print(f"Resend recusou o envio: {resend_resp.status_code} {resend_resp.text}", file=sys.stderr, flush=True)
+        except requests.RequestException as e:
+            print(f"Erro de rede ao chamar o Resend: {e}", file=sys.stderr, flush=True)
 
         # Avisa você (o idealizador) que chegou um novo cadastro
         if NOTIFY_EMAIL:
             try:
-                requests.post(
+                notify_resp = requests.post(
                     "https://api.resend.com/emails",
                     headers={
                         "Authorization": f"Bearer {RESEND_API_KEY}",
@@ -110,8 +113,10 @@ def signup():
                     },
                     timeout=10,
                 )
-            except requests.RequestException:
-                pass
+                if notify_resp.status_code >= 400:
+                    print(f"Resend recusou o aviso: {notify_resp.status_code} {notify_resp.text}", file=sys.stderr, flush=True)
+            except requests.RequestException as e:
+                print(f"Erro de rede ao chamar o Resend (aviso): {e}", file=sys.stderr, flush=True)
 
     return jsonify({"ok": True})
 
