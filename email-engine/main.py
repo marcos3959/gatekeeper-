@@ -124,9 +124,21 @@ def organize():
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
         imap.login(EMAIL_USER, EMAIL_PASS)
 
-        # Garante que a pasta de Quarentena existe (criar não dá erro se já existir)
+        # Garante que a pasta de Quarentena existe.
+        # imap.create() retorna erro se a pasta já existir — isso é esperado e não é problema.
+        # Só tratamos como problema real se a pasta não existir DEPOIS de tentarmos criar.
         if modo_real:
             imap.create(QUARANTINE_FOLDER)
+            status_lista, pastas = imap.list()
+            pasta_existe = status_lista == "OK" and any(
+                QUARANTINE_FOLDER.encode() in (p or b"") for p in pastas
+            )
+            if not pasta_existe:
+                return jsonify({
+                    "ok": False,
+                    "error": f"A pasta '{QUARANTINE_FOLDER}' não pôde ser confirmada no servidor. "
+                             "Por segurança, nada foi movido ou apagado.",
+                }), 500
 
         imap.select("INBOX", readonly=not modo_real)
 
@@ -137,6 +149,7 @@ def organize():
         ids = data[0].split()
         mantidos = []
         quarentena = []
+        falhas = []
 
         for msg_id in ids:
             status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
@@ -155,21 +168,31 @@ def organize():
             if endereco in WHITELIST:
                 mantidos.append(info)
             else:
-                quarentena.append(info)
                 if modo_real:
-                    imap.copy(msg_id, QUARANTINE_FOLDER)
-                    imap.store(msg_id, "+FLAGS", "\\Deleted")
+                    # TRAVA DE SEGURANÇA: só apaga o original se a cópia for confirmada.
+                    status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
+                    if status_copy == "OK":
+                        imap.store(msg_id, "+FLAGS", "\\Deleted")
+                        quarentena.append(info)
+                    else:
+                        info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
+                        falhas.append(info)
+                else:
+                    quarentena.append(info)
 
         if modo_real:
             imap.expunge()
 
-        return jsonify({
+        resposta = {
             "ok": True,
             "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
             "lista_branca_atual": sorted(WHITELIST),
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
-        })
+        }
+        if falhas:
+            resposta["falhas_nao_apagadas_por_seguranca"] = falhas
+        return jsonify(resposta)
 
     except imaplib.IMAP4.error as e:
         print(f"Erro de login/IMAP: {e}", file=sys.stderr, flush=True)
