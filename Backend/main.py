@@ -36,10 +36,10 @@ def signup():
     if not SUPABASE_URL or not SUPABASE_KEY:
         return jsonify({"ok": False, "error": "Backend ainda não configurado (faltam variáveis do Supabase)"}), 500
 
-    # 1) Salva o cadastro no Supabase (tabela "waitlist" — ver schema.sql)
+    # 1) Salva o cadastro no Supabase (tabela "gatekeeper_waitlist" — ver schema.sql)
     try:
         supa_resp = requests.post(
-            f"{SUPABASE_URL}/rest/v1/waitlist",
+            f"{SUPABASE_URL}/rest/v1/gatekeeper_waitlist",
             headers={
                 "apikey": SUPABASE_KEY,
                 "Authorization": f"Bearer {SUPABASE_KEY}",
