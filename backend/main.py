@@ -1,6 +1,8 @@
 import os
+import sys
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+import psycopg2
 import requests
 
 app = Flask(__name__)
@@ -8,15 +10,38 @@ CORS(app, resources={r"/signup": {"origins": "*"}})
 
 # ------------------------------------------------------------------
 # Variáveis de ambiente (configure no painel do Render, em "Environment"):
-#   SUPABASE_URL          -> ex: https://xxxxxxxx.supabase.co
-#   SUPABASE_SERVICE_KEY  -> chave "service_role" do Supabase (Settings > API)
-#   RESEND_API_KEY        -> chave da API do Resend (dashboard do Resend)
-#   NOTIFY_EMAIL          -> seu e-mail, para receber aviso de novo cadastro
+#   DATABASE_URL    -> a mesma informação que você já usa no reescreve-ai-web
+#                      (Render > seu projeto Supabase > Connect > Connection string)
+#   RESEND_API_KEY  -> chave da API do Resend (dashboard do Resend)
+#   NOTIFY_EMAIL    -> seu e-mail, para receber aviso de novo cadastro
 # ------------------------------------------------------------------
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "")
+
+
+def save_email(email: str):
+    """Salva o e-mail na tabela gatekeeper_waitlist. Retorna (sucesso, detalhe_do_erro)."""
+    conn = None
+    try:
+        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO gatekeeper_waitlist (email)
+                VALUES (%s)
+                ON CONFLICT (email) DO NOTHING;
+                """,
+                (email,),
+            )
+        conn.commit()
+        return True, None
+    except Exception as e:
+        print(f"Erro ao salvar no banco: {e}", file=sys.stderr, flush=True)
+        return False, str(e)
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @app.route("/", methods=["GET"])
@@ -33,29 +58,21 @@ def signup():
     if not email or "@" not in email or "." not in email:
         return jsonify({"ok": False, "error": "E-mail inválido"}), 400
 
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return jsonify({"ok": False, "error": "Backend ainda não configurado (faltam variáveis do Supabase)"}), 500
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "Backend ainda não configurado (falta DATABASE_URL)"}), 500
 
-    # 1) Salva o cadastro no Supabase (tabela "gatekeeper_waitlist" — ver schema.sql)
-    try:
-        supa_resp = requests.post(
-            f"{SUPABASE_URL}/rest/v1/gatekeeper_waitlist",
-            headers={
-                "apikey": SUPABASE_KEY,
-                "Authorization": f"Bearer {SUPABASE_KEY}",
-                "Content-Type": "application/json",
-                "Prefer": "resolution=ignore-duplicates,return=minimal",
-            },
-            json={"email": email},
-            timeout=10,
-        )
-    except requests.RequestException:
-        return jsonify({"ok": False, "error": "Falha ao conectar com o banco de dados"}), 502
+    ok, error_detail = save_email(email)
+    if not ok:
+        # MODO DE DIAGNÓSTICO TEMPORÁRIO: mostra o erro real para facilitar a
+        # depuração agora. Depois que tudo estiver funcionando, remova o
+        # "detalhe_tecnico" da resposta por segurança.
+        return jsonify({
+            "ok": False,
+            "error": "Não foi possível salvar o cadastro",
+            "detalhe_tecnico": error_detail,
+        }), 500
 
-    if supa_resp.status_code not in (200, 201, 204, 409):
-        return jsonify({"ok": False, "error": "Não foi possível salvar o cadastro"}), 500
-
-    # 2) Envia e-mail de confirmação para quem se cadastrou (via Resend)
+    # Envia e-mail de confirmação para quem se cadastrou (via Resend)
     #    "onboarding@resend.dev" funciona sem precisar verificar domínio próprio —
     #    ótimo para esta fase de teste. Depois, troque pelo seu domínio verificado.
     if RESEND_API_KEY:
@@ -80,7 +97,7 @@ def signup():
         except requests.RequestException:
             pass  # não travar o cadastro por causa do e-mail de confirmação
 
-        # 3) Avisa você (o idealizador) que chegou um novo cadastro
+        # Avisa você (o idealizador) que chegou um novo cadastro
         if NOTIFY_EMAIL:
             try:
                 requests.post(
