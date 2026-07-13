@@ -2,7 +2,7 @@ import os
 import sys
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import psycopg2
+import psycopg
 import requests
 
 app = Flask(__name__)
@@ -22,26 +22,22 @@ NOTIFY_EMAIL = os.environ.get("NOTIFY_EMAIL", "")
 
 def save_email(email: str):
     """Salva o e-mail na tabela gatekeeper_waitlist. Retorna (sucesso, detalhe_do_erro)."""
-    conn = None
     try:
-        conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO gatekeeper_waitlist (email)
-                VALUES (%s)
-                ON CONFLICT (email) DO NOTHING;
-                """,
-                (email,),
-            )
-        conn.commit()
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_waitlist (email)
+                    VALUES (%s)
+                    ON CONFLICT (email) DO NOTHING;
+                    """,
+                    (email,),
+                )
+            conn.commit()
         return True, None
     except Exception as e:
         print(f"Erro ao salvar no banco: {e}", file=sys.stderr, flush=True)
         return False, str(e)
-    finally:
-        if conn is not None:
-            conn.close()
 
 
 @app.route("/", methods=["GET"])
