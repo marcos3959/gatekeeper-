@@ -2,8 +2,9 @@ import os
 import sys
 import imaplib
 import email
+import email.utils
 from email.header import decode_header
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 app = Flask(__name__)
@@ -11,13 +12,22 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ------------------------------------------------------------------
 # Variáveis de ambiente (configure no painel do Render, em "Environment"):
-#   EMAIL_USER  -> gatekeeper@ccat.com.br
-#   EMAIL_PASS  -> a senha dessa caixa de e-mail (Locaweb)
+#   EMAIL_USER       -> gatekeeper@ccat.com.br
+#   EMAIL_PASS       -> a senha dessa caixa de e-mail (Locaweb)
+#   WHITELIST_EMAILS -> lista de e-mails "conhecidos", separados por vírgula
+#                       ex: autorizafoto@gmail.com,marcos.usp39@gmail.com
 # ------------------------------------------------------------------
 IMAP_HOST = "email-ssl.com.br"
 IMAP_PORT = 993
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
+QUARANTINE_FOLDER = "Quarentena"
+
+WHITELIST = {
+    e.strip().lower()
+    for e in os.environ.get("WHITELIST_EMAILS", "").split(",")
+    if e.strip()
+}
 
 
 def decode_str(value):
@@ -78,6 +88,87 @@ def test_connection():
             "ok": True,
             "total_de_emails_na_caixa": len(all_ids),
             "ultimas_mensagens": mensagens,
+        })
+
+    except imaplib.IMAP4.error as e:
+        print(f"Erro de login/IMAP: {e}", file=sys.stderr, flush=True)
+        return jsonify({"ok": False, "error": f"Erro de conexão/login IMAP: {e}"}), 500
+    except Exception as e:
+        print(f"Erro inesperado: {e}", file=sys.stderr, flush=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+@app.route("/organize", methods=["GET"])
+def organize():
+    """
+    Analisa a Caixa de Entrada e decide, para cada e-mail, se o remetente
+    está na Lista Branca (fica) ou não (vai para a Quarentena).
+
+    Por padrão, roda em MODO SIMULAÇÃO (não mexe em nada) — só mostra o
+    que faria. Para executar de verdade (mover os e-mails), é preciso
+    acessar com ?confirmar=sim no final do endereço.
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+
+        # Garante que a pasta de Quarentena existe (criar não dá erro se já existir)
+        if modo_real:
+            imap.create(QUARANTINE_FOLDER)
+
+        imap.select("INBOX", readonly=not modo_real)
+
+        status, data = imap.search(None, "ALL")
+        if status != "OK":
+            return jsonify({"ok": False, "error": "Não foi possível listar as mensagens"}), 500
+
+        ids = data[0].split()
+        mantidos = []
+        quarentena = []
+
+        for msg_id in ids:
+            status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw_header = msg_data[0][1].decode("utf-8", errors="replace")
+            parsed = email.message_from_string(raw_header)
+
+            from_header = parsed.get("From", "")
+            _, endereco = email.utils.parseaddr(from_header)
+            endereco = endereco.lower()
+            assunto = decode_str(parsed.get("Subject"))
+
+            info = {"de": endereco, "assunto": assunto}
+
+            if endereco in WHITELIST:
+                mantidos.append(info)
+            else:
+                quarentena.append(info)
+                if modo_real:
+                    imap.copy(msg_id, QUARANTINE_FOLDER)
+                    imap.store(msg_id, "+FLAGS", "\\Deleted")
+
+        if modo_real:
+            imap.expunge()
+
+        return jsonify({
+            "ok": True,
+            "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
+            "lista_branca_atual": sorted(WHITELIST),
+            "mantidos_na_caixa_de_entrada": mantidos,
+            "movidos_para_quarentena": quarentena,
         })
 
     except imaplib.IMAP4.error as e:
