@@ -1,6 +1,0 @@
-# Nunca subir este arquivo para o GitHub — ele guarda suas chaves secretas
-.env
-
-# Arquivos temporários do Python
-__pycache__/
-*.pyc
