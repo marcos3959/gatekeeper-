@@ -21,7 +21,7 @@ IMAP_HOST = "email-ssl.com.br"
 IMAP_PORT = 993
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
-QUARANTINE_FOLDER = "Quarentena"
+QUARANTINE_FOLDER = "INBOX.Quarentena"
 
 WHITELIST = {
     e.strip().lower()
