@@ -745,6 +745,67 @@ def ver_email_quarentena():
                 pass
 
 
+@app.route("/quarentena/apagar", methods=["GET"])
+def apagar_email_quarentena():
+    """
+    Apaga PERMANENTEMENTE um e-mail da pasta de Quarentena.
+    Por segurança, só apaga de verdade com ?confirmar=sim — sem isso, apenas
+    mostra qual e-mail seria apagado, sem fazer nada.
+    Uso: /quarentena/apagar?id=8&confirmar=sim
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    msg_id = request.args.get("id", "").strip()
+    if not msg_id:
+        return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
+
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(QUARANTINE_FOLDER, readonly=not modo_real)
+        if status != "OK":
+            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+
+        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
+
+        parsed = email.message_from_bytes(msg_data[0][1])
+        from_header = parsed.get("From", "")
+        _, endereco = email.utils.parseaddr(from_header)
+        assunto = decode_str(parsed.get("Subject"))
+
+        if not modo_real:
+            return jsonify({
+                "ok": True,
+                "modo": "SIMULAÇÃO — nada foi apagado",
+                "seria_apagado": {"id": msg_id, "de": endereco.lower(), "assunto": assunto},
+                "dica": "Acesse este mesmo link com &confirmar=sim no final para apagar de verdade.",
+            })
+
+        imap.store(msg_id.encode(), "+FLAGS", "\\Deleted")
+        imap.expunge()
+
+        return jsonify({
+            "ok": True,
+            "modo": "REAL — e-mail apagado permanentemente",
+            "apagado": {"id": msg_id, "de": endereco.lower(), "assunto": assunto},
+        })
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/quarentena/anexo", methods=["GET"])
 def ver_anexo_quarentena():
     """
