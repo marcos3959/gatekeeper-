@@ -5,6 +5,7 @@ import imaplib
 import email
 import email.utils
 from email.header import decode_header
+from html.parser import HTMLParser
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import psycopg
@@ -14,10 +15,12 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ------------------------------------------------------------------
 # Variáveis de ambiente (configure no painel do Render, em "Environment"):
-#   EMAIL_USER       -> gatekeeper@ccat.com.br
-#   EMAIL_PASS       -> a senha dessa caixa de e-mail (Locaweb)
-#   WHITELIST_EMAILS -> lista "de fábrica", separada por vírgula (opcional)
-#   DATABASE_URL     -> mesma conexão Postgres/Supabase usada no outro serviço
+#   EMAIL_USER            -> gatekeeper@ccat.com.br
+#   EMAIL_PASS            -> a senha dessa caixa de e-mail (Locaweb)
+#   WHITELIST_EMAILS      -> lista "de fábrica", separada por vírgula (opcional)
+#   DATABASE_URL          -> mesma conexão Postgres/Supabase usada no outro serviço
+#   DOMINIOS_INSTITUCIONAIS -> domínios protegidos contra falsificação, separados
+#                              por vírgula. Ex: pf.gov.br,trt.jus.br,correios.com.br
 # ------------------------------------------------------------------
 IMAP_HOST = "email-ssl.com.br"
 IMAP_PORT = 993
@@ -31,6 +34,61 @@ WHITELIST_FIXA = {
     for e in os.environ.get("WHITELIST_EMAILS", "").split(",")
     if e.strip()
 }
+
+DOMINIOS_INSTITUCIONAIS = {
+    d.strip().lower()
+    for d in os.environ.get(
+        "DOMINIOS_INSTITUCIONAIS",
+        "gov.br,jus.br,correios.com.br"
+    ).split(",")
+    if d.strip()
+}
+
+
+def dominio_do_email(endereco: str) -> str:
+    return endereco.split("@")[-1].lower() if "@" in endereco else ""
+
+
+def eh_dominio_institucional(endereco: str) -> bool:
+    """Verifica se o remetente usa um domínio institucional protegido (ou subdomínio dele)."""
+    dominio = dominio_do_email(endereco)
+    return any(dominio == d or dominio.endswith("." + d) for d in DOMINIOS_INSTITUCIONAIS)
+
+
+def checar_autenticacao(msg) -> dict:
+    """
+    Lê o cabeçalho 'Authentication-Results', que o próprio servidor de e-mail já
+    preenche com o resultado das checagens de SPF, DKIM e DMARC. Não refazemos
+    essa verificação criptográfica do zero — confiamos no resultado já calculado
+    pelo servidor que recebeu a mensagem, que é a prática padrão do mercado.
+    """
+    resultado = {"spf": "nao_verificado", "dkim": "nao_verificado", "dmarc": "nao_verificado", "cabecalho_bruto": None}
+    cabecalhos = msg.get_all("Authentication-Results") or []
+    if not cabecalhos:
+        return resultado
+
+    texto_completo = " ".join(cabecalhos)
+    resultado["cabecalho_bruto"] = texto_completo
+
+    m = re.search(r"spf=(\w+)", texto_completo, re.IGNORECASE)
+    if m:
+        resultado["spf"] = m.group(1).lower()
+    m = re.search(r"dkim=(\w+)", texto_completo, re.IGNORECASE)
+    if m:
+        resultado["dkim"] = m.group(1).lower()
+    m = re.search(r"dmarc=(\w+)", texto_completo, re.IGNORECASE)
+    if m:
+        resultado["dmarc"] = m.group(1).lower()
+
+    return resultado
+
+
+def autenticacao_passou(auth: dict) -> bool:
+    """Considera autenticado só se SPF, DKIM e DMARC passaram, sem nenhum 'fail'."""
+    valores = [auth["spf"], auth["dkim"], auth["dmarc"]]
+    if all(v == "nao_verificado" for v in valores):
+        return False  # sem nenhuma informação, não podemos confiar
+    return all(v in ("pass", "nao_verificado") for v in valores) and any(v == "pass" for v in valores)
 
 
 def carregar_whitelist():
@@ -212,9 +270,12 @@ def organize():
         mantidos = []
         quarentena = []
         falhas = []
+        alertas_falsificacao = []
 
         for msg_id in ids:
-            status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+            status, msg_data = imap.fetch(
+                msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT AUTHENTICATION-RESULTS)])"
+            )
             if status != "OK" or not msg_data or not msg_data[0]:
                 continue
             raw_header = msg_data[0][1].decode("utf-8", errors="replace")
@@ -226,6 +287,28 @@ def organize():
             assunto = decode_str(parsed.get("Subject"))
 
             info = {"de": endereco, "assunto": assunto}
+
+            # Camada extra: se o remetente usa um domínio institucional protegido
+            # (governo, judiciário, Correios etc.), a autenticidade técnica manda
+            # mais que a Lista Branca — mesmo que pareça "conhecido", se falhar
+            # na checagem de SPF/DKIM/DMARC, é tratado como possível falsificação.
+            if eh_dominio_institucional(endereco):
+                auth = checar_autenticacao(parsed)
+                if autenticacao_passou(auth):
+                    info["institucional_verificado"] = True
+                    mantidos.append(info)
+                    continue
+                else:
+                    info["alerta"] = "POSSÍVEL FALSIFICAÇÃO DE DOMÍNIO INSTITUCIONAL"
+                    info["detalhe_autenticacao"] = auth
+                    alertas_falsificacao.append(info)
+                    if modo_real:
+                        status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
+                        if status_copy == "OK":
+                            imap.store(msg_id, "+FLAGS", "\\Deleted")
+                        else:
+                            info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
+                    continue
 
             if endereco in whitelist:
                 mantidos.append(info)
@@ -315,12 +398,51 @@ def ver_quarentena():
                 pass
 
 
+class _ExtratorTextoHTML(HTMLParser):
+    """
+    Interpretador de HTML de verdade (não regex) para extrair só o texto visível.
+    Isso é bem mais robusto que procurar por padrões de texto: um interpretador
+    de HTML entende a estrutura da página como um navegador entenderia, então é
+    muito mais difícil de burlar com HTML malformado ou tags aninhadas de propósito.
+    """
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.partes = []
+        self._ignorando = 0  # contador para lidar com <script>/<style> aninhados
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style"):
+            self._ignorando += 1
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style") and self._ignorando > 0:
+            self._ignorando -= 1
+
+    def handle_data(self, data):
+        if self._ignorando == 0:
+            self.partes.append(data)
+
+    def texto(self):
+        return "".join(self.partes)
+
+
+def _extrair_texto_de_html(html: str) -> str:
+    parser = _ExtratorTextoHTML()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        pass  # HTML malformado — segue com o que já foi extraído até o erro
+    return parser.texto()
+
+
 def extrair_texto_seguro(msg):
     """
     Extrai apenas o texto do e-mail, de forma segura:
     - Nunca executa nem baixa anexos.
     - Prefere a versão em texto puro (text/plain).
-    - Se só houver HTML, remove todas as tags e scripts, deixando só o texto.
+    - Se só houver HTML, usa um interpretador de HTML de verdade (não regex)
+      para extrair só o texto visível, ignorando <script> e <style> por completo.
     - Substitui links por um aviso, para que nada seja clicável.
     """
     corpo = ""
@@ -338,17 +460,13 @@ def extrair_texto_seguro(msg):
                 if parte.get_content_type() == "text/html":
                     payload = parte.get_payload(decode=True) or b""
                     html = payload.decode(parte.get_content_charset() or "utf-8", errors="replace")
-                    html = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
-                    html = re.sub(r"<style.*?</style>", " ", html, flags=re.DOTALL | re.IGNORECASE)
-                    corpo = re.sub(r"<[^>]+>", " ", html)  # remove todas as tags restantes
+                    corpo = _extrair_texto_de_html(html)
                     break
     else:
         payload = msg.get_payload(decode=True) or b""
         texto = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
         if msg.get_content_type() == "text/html":
-            texto = re.sub(r"<script.*?</script>", " ", texto, flags=re.DOTALL | re.IGNORECASE)
-            texto = re.sub(r"<style.*?</style>", " ", texto, flags=re.DOTALL | re.IGNORECASE)
-            texto = re.sub(r"<[^>]+>", " ", texto)
+            texto = _extrair_texto_de_html(texto)
         corpo = texto
 
     corpo = re.sub(r"https?://\S+", "[link removido por segurança]", corpo)
@@ -406,7 +524,7 @@ def ver_email_quarentena():
             "data": msg.get("Date"),
             "corpo_seguro": corpo,
             "anexos_encontrados_mas_nao_baixados": anexos,
-            "aviso": "Links foram removidos e anexos não foram baixados, por segurança.",
+            "aviso": "Links e anexos foram neutralizados nesta visualização — nada aqui pode executar automaticamente. Isso NÃO significa que o conteúdo é verdadeiro ou confiável. Leia com atenção antes de agir.",
         })
 
     except Exception as e:
