@@ -361,6 +361,51 @@ def atualizar_lista_govbr_rota():
     return jsonify({"ok": ok, "mensagem": mensagem})
 
 
+@app.route("/diagnostico-pastas", methods=["GET"])
+def diagnostico_pastas():
+    """
+    Rota de diagnóstico, somente leitura: compara TODAS as pastas que existem
+    no servidor com as que estão efetivamente "inscritas" (subscribed) — é a
+    inscrição que faz uma pasta aparecer na lista do webmail/app de e-mail.
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+
+        status_todas, todas = imap.list()
+        status_inscritas, inscritas = imap.lsub()
+
+        todas_legivel = [p.decode("utf-8", errors="replace") for p in todas] if status_todas == "OK" else []
+        inscritas_legivel = [p.decode("utf-8", errors="replace") for p in inscritas] if status_inscritas == "OK" else []
+
+        quarentena_existe = any("Quarentena" in p for p in todas_legivel)
+        quarentena_inscrita = any("Quarentena" in p for p in inscritas_legivel)
+
+        return jsonify({
+            "ok": True,
+            "quarentena_existe_no_servidor": quarentena_existe,
+            "quarentena_esta_inscrita": quarentena_inscrita,
+            "diagnostico": (
+                "Tudo certo — deveria aparecer no webmail." if quarentena_inscrita
+                else "A pasta existe mas NÃO está inscrita — por isso não aparece no webmail."
+            ),
+            "todas_as_pastas": todas_legivel,
+            "pastas_inscritas": inscritas_legivel,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/verificar-dominio", methods=["GET"])
 def verificar_dominio():
     """
