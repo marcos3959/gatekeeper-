@@ -1,9 +1,13 @@
 import os
 import sys
 import re
+import csv
+import io
 import imaplib
 import email
 import email.utils
+import requests
+from datetime import datetime, timezone
 from email.header import decode_header
 from html.parser import HTMLParser
 from flask import Flask, jsonify, request
@@ -44,6 +48,75 @@ DOMINIOS_INSTITUCIONAIS = {
     if d.strip()
 }
 
+# URL do arquivo CSV oficial "Domínios GOV.BR", publicado mensalmente pela
+# Secretaria de Governo Digital em dados.gov.br. Configure com o link direto
+# de download do CSV (obtido na página do dataset, botão "Ir para recurso").
+URL_LISTA_GOVBR = os.environ.get("URL_LISTA_GOVBR", "")
+
+
+def atualizar_cache_dominios_govbr():
+    """
+    Baixa a lista oficial de domínios .gov.br (dados.gov.br) e substitui o
+    conteúdo da tabela gatekeeper_dominios_govbr no banco de dados.
+    Feito para ser chamado periodicamente (ex.: 1x por dia via cron-job.org),
+    nunca a cada e-mail — por isso os resultados ficam em cache no banco.
+    """
+    if not URL_LISTA_GOVBR:
+        return False, "URL_LISTA_GOVBR não configurada"
+    if not DATABASE_URL:
+        return False, "DATABASE_URL não configurado"
+
+    try:
+        resp = requests.get(URL_LISTA_GOVBR, timeout=30)
+        resp.raise_for_status()
+        texto = resp.content.decode("utf-8", errors="replace")
+    except requests.RequestException as e:
+        return False, f"Falha ao baixar a lista: {e}"
+
+    leitor = csv.DictReader(io.StringIO(texto), delimiter=";")
+    linhas = []
+    for linha in leitor:
+        dominio = (linha.get("dominio") or "").strip().lower()
+        orgao = (linha.get("nome") or "").strip()
+        if dominio:
+            linhas.append((dominio, orgao))
+
+    if not linhas:
+        return False, "Nenhuma linha válida encontrada no CSV (verifique o formato/URL)"
+
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE TABLE gatekeeper_dominios_govbr;")
+                cur.executemany(
+                    "INSERT INTO gatekeeper_dominios_govbr (dominio, orgao) VALUES (%s, %s) "
+                    "ON CONFLICT (dominio) DO UPDATE SET orgao = EXCLUDED.orgao, atualizado_em = now();",
+                    linhas,
+                )
+            conn.commit()
+        return True, f"{len(linhas)} domínios atualizados com sucesso"
+    except Exception as e:
+        return False, f"Erro ao salvar no banco: {e}"
+
+
+def consultar_dominio_na_lista_oficial(dominio: str):
+    """Verifica se um domínio .gov.br está na lista oficial já baixada (cache no banco)."""
+    if not DATABASE_URL:
+        return {"consultado": False, "erro": "DATABASE_URL não configurado"}
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT orgao, atualizado_em FROM gatekeeper_dominios_govbr WHERE dominio = %s;",
+                    (dominio,),
+                )
+                linha = cur.fetchone()
+        if linha:
+            return {"consultado": True, "encontrado": True, "orgao": linha[0], "lista_atualizada_em": str(linha[1])}
+        return {"consultado": True, "encontrado": False}
+    except Exception as e:
+        return {"consultado": False, "erro": str(e)}
+
 
 def dominio_do_email(endereco: str) -> str:
     return endereco.split("@")[-1].lower() if "@" in endereco else ""
@@ -53,6 +126,59 @@ def eh_dominio_institucional(endereco: str) -> bool:
     """Verifica se o remetente usa um domínio institucional protegido (ou subdomínio dele)."""
     dominio = dominio_do_email(endereco)
     return any(dominio == d or dominio.endswith("." + d) for d in DOMINIOS_INSTITUCIONAIS)
+
+
+def consultar_idade_dominio(dominio: str) -> dict:
+    """
+    Consulta há quanto tempo o domínio existe, usando o protocolo RDAP:
+    - Domínios .br: consulta direto no Registro.br (rdap.registro.br).
+    - Qualquer outro domínio (.com, .net, etc.): usa o RDAP Bootstrap (rdap.org),
+      que encaminha automaticamente para o registro correto no mundo todo.
+
+    Retorna um aviso se o domínio foi registrado há pouco tempo — sinal comum
+    de domínio criado especificamente para golpe (ex.: 'banco-seguro.com.br'
+    criado ontem, imitando um banco de verdade).
+    """
+    resultado = {"consultado": False, "dias_desde_registro": None, "aviso": None, "erro": None}
+
+    if dominio.endswith(".br"):
+        url = f"https://rdap.registro.br/domain/{dominio}"
+    else:
+        url = f"https://rdap.org/domain/{dominio}"
+
+    try:
+        resp = requests.get(url, timeout=6, headers={"Accept": "application/rdap+json"})
+        if resp.status_code != 200:
+            resultado["erro"] = f"RDAP retornou status {resp.status_code} (domínio pode não existir ou estar indisponível)"
+            return resultado
+
+        dados = resp.json()
+        data_registro = None
+        for evento in dados.get("events", []):
+            if evento.get("eventAction") in ("registration",):
+                data_registro = evento.get("eventDate")
+                break
+
+        if not data_registro:
+            resultado["erro"] = "Data de registro não encontrada na resposta do RDAP"
+            return resultado
+
+        data_registro_dt = datetime.fromisoformat(data_registro.replace("Z", "+00:00"))
+        dias = (datetime.now(timezone.utc) - data_registro_dt).days
+
+        resultado["consultado"] = True
+        resultado["dias_desde_registro"] = dias
+        if dias < 90:
+            resultado["aviso"] = f"Domínio registrado há apenas {dias} dias — sinal de alerta para um domínio institucional."
+
+        return resultado
+
+    except requests.RequestException as e:
+        resultado["erro"] = f"Falha ao consultar RDAP: {e}"
+        return resultado
+    except Exception as e:
+        resultado["erro"] = f"Erro ao interpretar resposta do RDAP: {e}"
+        return resultado
 
 
 def checar_autenticacao(msg) -> dict:
@@ -222,6 +348,30 @@ def list_folders():
                 pass
 
 
+@app.route("/atualizar-lista-govbr", methods=["GET"])
+def atualizar_lista_govbr_rota():
+    """
+    Atualiza o cache local da lista oficial de domínios .gov.br.
+    Deve ser chamada periodicamente (ex.: 1x por dia via cron-job.org),
+    nunca a cada e-mail recebido.
+    """
+    ok, mensagem = atualizar_cache_dominios_govbr()
+    return jsonify({"ok": ok, "mensagem": mensagem})
+
+
+@app.route("/verificar-dominio", methods=["GET"])
+def verificar_dominio():
+    """
+    Rota de teste isolada: consulta há quanto tempo um domínio existe.
+    Uso: /verificar-dominio?dominio=itau.com.br
+    """
+    dominio = request.args.get("dominio", "").strip().lower()
+    if not dominio:
+        return jsonify({"ok": False, "error": "Informe um domínio em ?dominio="}), 400
+    info = consultar_idade_dominio(dominio)
+    return jsonify({"ok": True, "dominio": dominio, **info})
+
+
 @app.route("/organize", methods=["GET"])
 def organize():
     """
@@ -294,6 +444,9 @@ def organize():
             # na checagem de SPF/DKIM/DMARC, é tratado como possível falsificação.
             if eh_dominio_institucional(endereco):
                 auth = checar_autenticacao(parsed)
+                dominio_remetente = dominio_do_email(endereco)
+                if dominio_remetente.endswith(".gov.br"):
+                    info["confirmacao_lista_oficial_govbr"] = consultar_dominio_na_lista_oficial(dominio_remetente)
                 if autenticacao_passou(auth):
                     info["institucional_verificado"] = True
                     mantidos.append(info)
@@ -301,6 +454,7 @@ def organize():
                 else:
                     info["alerta"] = "POSSÍVEL FALSIFICAÇÃO DE DOMÍNIO INSTITUCIONAL"
                     info["detalhe_autenticacao"] = auth
+                    info["idade_do_dominio"] = consultar_idade_dominio(dominio_do_email(endereco))
                     alertas_falsificacao.append(info)
                     if modo_real:
                         status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
