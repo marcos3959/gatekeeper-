@@ -7,10 +7,12 @@ import imaplib
 import email
 import email.utils
 import requests
+import fitz  # PyMuPDF — usado só para RENDERIZAR (desenhar) PDFs como imagem, nunca para executar nada
+from PIL import Image
 from datetime import datetime, timezone
 from email.header import decode_header
 from html.parser import HTMLParser
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import psycopg
 
@@ -638,6 +640,58 @@ def extrair_texto_seguro(msg):
     return corpo[:5000], anexos  # limite de 5000 caracteres por segurança/tamanho
 
 
+def extrair_bytes_dos_anexos(msg):
+    """Retorna a lista de anexos (nome, tipo, bytes brutos), na mesma ordem usada em extrair_texto_seguro."""
+    anexos = []
+    if msg.is_multipart():
+        for parte in msg.walk():
+            disposicao = str(parte.get("Content-Disposition") or "")
+            if "attachment" in disposicao:
+                nome = decode_str(parte.get_filename() or "arquivo_sem_nome")
+                tipo = parte.get_content_type()
+                dados = parte.get_payload(decode=True) or b""
+                anexos.append({"nome": nome, "tipo": tipo, "dados": dados})
+    return anexos
+
+
+def renderizar_anexo_como_imagem(nome: str, tipo: str, dados: bytes):
+    """
+    Converte um anexo em uma imagem PNG nova, desenhada do zero — nunca abre,
+    executa ou interpreta o arquivo original como um programa/leitor faria.
+
+    Para PDF: usa PyMuPDF só para desenhar a página como uma figura (não executa
+    JavaScript nem ações embutidas no PDF).
+    Para imagens: reabre e regrava os pixels numa imagem nova, descartando
+    qualquer metadado ou conteúdo incomum embutido no arquivo original.
+
+    Retorna (bytes_da_imagem_png, mensagem_de_erro).
+    """
+    nome_lower = nome.lower()
+    try:
+        if tipo == "application/pdf" or nome_lower.endswith(".pdf"):
+            documento = fitz.open(stream=dados, filetype="pdf")
+            if documento.page_count == 0:
+                return None, "PDF sem páginas"
+            pagina = documento.load_page(0)
+            pixmap = pagina.get_pixmap(dpi=120)
+            return pixmap.tobytes("png"), None
+
+        elif tipo.startswith("image/") or nome_lower.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")):
+            imagem = Image.open(io.BytesIO(dados))
+            imagem = imagem.convert("RGB")
+            buffer = io.BytesIO()
+            imagem.save(buffer, format="PNG")
+            return buffer.getvalue(), None
+
+        else:
+            return None, (
+                f"Ainda não existe prévia segura para arquivos do tipo '{tipo}'. "
+                "Por segurança, ele NÃO foi baixado nem aberto."
+            )
+    except Exception as e:
+        return None, f"Não foi possível gerar uma prévia segura deste arquivo: {e}"
+
+
 @app.route("/quarentena/ver", methods=["GET"])
 def ver_email_quarentena():
     """
@@ -680,6 +734,61 @@ def ver_email_quarentena():
             "anexos_encontrados_mas_nao_baixados": anexos,
             "aviso": "Links e anexos foram neutralizados nesta visualização — nada aqui pode executar automaticamente. Isso NÃO significa que o conteúdo é verdadeiro ou confiável. Leia com atenção antes de agir.",
         })
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+@app.route("/quarentena/anexo", methods=["GET"])
+def ver_anexo_quarentena():
+    """
+    Mostra uma prévia SEGURA de um anexo de um e-mail da Quarentena — nunca o
+    arquivo original, sempre uma imagem redesenhada do zero.
+    Uso: /quarentena/anexo?id=123&indice=0  (indice=0 é o primeiro anexo, 1 o segundo, etc.)
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    msg_id = request.args.get("id", "").strip()
+    try:
+        indice = int(request.args.get("indice", "0"))
+    except ValueError:
+        return jsonify({"ok": False, "error": "O parâmetro 'indice' precisa ser um número"}), 400
+
+    if not msg_id:
+        return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        if status != "OK":
+            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+
+        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
+
+        msg = email.message_from_bytes(msg_data[0][1])
+        anexos = extrair_bytes_dos_anexos(msg)
+
+        if indice < 0 or indice >= len(anexos):
+            return jsonify({"ok": False, "error": f"Esse e-mail tem {len(anexos)} anexo(s); índice {indice} não existe"}), 404
+
+        anexo = anexos[indice]
+        imagem_png, erro = renderizar_anexo_como_imagem(anexo["nome"], anexo["tipo"], anexo["dados"])
+
+        if erro:
+            return jsonify({"ok": False, "error": erro, "nome_do_anexo": anexo["nome"]}), 415
+
+        return Response(imagem_png, mimetype="image/png")
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
