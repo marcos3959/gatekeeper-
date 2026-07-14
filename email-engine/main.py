@@ -6,6 +6,7 @@ import email.utils
 from email.header import decode_header
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+import psycopg
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -14,20 +15,55 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # Variáveis de ambiente (configure no painel do Render, em "Environment"):
 #   EMAIL_USER       -> gatekeeper@ccat.com.br
 #   EMAIL_PASS       -> a senha dessa caixa de e-mail (Locaweb)
-#   WHITELIST_EMAILS -> lista de e-mails "conhecidos", separados por vírgula
-#                       ex: autorizafoto@gmail.com,marcos.usp39@gmail.com
+#   WHITELIST_EMAILS -> lista "de fábrica", separada por vírgula (opcional)
+#   DATABASE_URL     -> mesma conexão Postgres/Supabase usada no outro serviço
 # ------------------------------------------------------------------
 IMAP_HOST = "email-ssl.com.br"
 IMAP_PORT = 993
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
 QUARANTINE_FOLDER = "INBOX.Quarentena"
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-WHITELIST = {
+WHITELIST_FIXA = {
     e.strip().lower()
     for e in os.environ.get("WHITELIST_EMAILS", "").split(",")
     if e.strip()
 }
+
+
+def carregar_whitelist():
+    """Combina a lista fixa (variável de ambiente) com a lista salva no banco (aprovações)."""
+    whitelist = set(WHITELIST_FIXA)
+    if not DATABASE_URL:
+        return whitelist
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT email FROM gatekeeper_whitelist;")
+                for (e,) in cur.fetchall():
+                    whitelist.add(e.strip().lower())
+    except Exception as e:
+        print(f"Aviso: não foi possível carregar a whitelist do banco: {e}", file=sys.stderr, flush=True)
+    return whitelist
+
+
+def aprovar_remetente(email_addr: str):
+    """Adiciona um e-mail permanentemente à Lista Branca (tabela gatekeeper_whitelist)."""
+    if not DATABASE_URL:
+        return False, "DATABASE_URL não configurado"
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO gatekeeper_whitelist (email) VALUES (%s) ON CONFLICT (email) DO NOTHING;",
+                    (email_addr.strip().lower(),),
+                )
+            conn.commit()
+        return True, None
+    except Exception as e:
+        print(f"Erro ao aprovar remetente: {e}", file=sys.stderr, flush=True)
+        return False, str(e)
 
 
 def decode_str(value):
@@ -141,6 +177,7 @@ def organize():
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     modo_real = request.args.get("confirmar", "").lower() == "sim"
+    whitelist = carregar_whitelist()
 
     imap = None
     try:
@@ -188,7 +225,7 @@ def organize():
 
             info = {"de": endereco, "assunto": assunto}
 
-            if endereco in WHITELIST:
+            if endereco in whitelist:
                 mantidos.append(info)
             else:
                 if modo_real:
@@ -209,7 +246,7 @@ def organize():
         resposta = {
             "ok": True,
             "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
-            "lista_branca_atual": sorted(WHITELIST),
+            "lista_branca_atual": sorted(whitelist),
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
         }
@@ -229,6 +266,69 @@ def organize():
                 imap.logout()
             except Exception:
                 pass
+
+
+@app.route("/quarentena", methods=["GET"])
+def ver_quarentena():
+    """Lista, somente leitura, o que está guardado na pasta de Quarentena."""
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        if status != "OK":
+            return jsonify({"ok": True, "mensagens": [], "aviso": "A pasta de Quarentena ainda não existe ou está vazia."})
+
+        status, data = imap.search(None, "ALL")
+        ids = data[0].split() if status == "OK" else []
+
+        mensagens = []
+        for msg_id in ids:
+            status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw_header = msg_data[0][1].decode("utf-8", errors="replace")
+            parsed = email.message_from_string(raw_header)
+            from_header = parsed.get("From", "")
+            _, endereco = email.utils.parseaddr(from_header)
+            mensagens.append({
+                "id": msg_id.decode(),
+                "de": endereco.lower(),
+                "assunto": decode_str(parsed.get("Subject")),
+                "data": parsed.get("Date"),
+            })
+
+        return jsonify({"ok": True, "total": len(mensagens), "mensagens": mensagens})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+@app.route("/aprovar", methods=["POST", "GET"])
+def aprovar():
+    """
+    Aprova um remetente de forma permanente: adiciona à Lista Branca (banco de dados).
+    Uso: /aprovar?email=alguem@exemplo.com
+    Isso NÃO move e-mails antigos automaticamente — só passa a valer para os próximos.
+    """
+    email_addr = request.args.get("email", "").strip().lower()
+    if not email_addr or "@" not in email_addr:
+        return jsonify({"ok": False, "error": "Informe um e-mail válido em ?email="}), 400
+
+    ok, erro = aprovar_remetente(email_addr)
+    if not ok:
+        return jsonify({"ok": False, "error": erro}), 500
+
+    return jsonify({"ok": True, "mensagem": f"{email_addr} foi adicionado à Lista Branca permanentemente."})
 
 
 if __name__ == "__main__":
