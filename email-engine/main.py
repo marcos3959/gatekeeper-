@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import imaplib
 import email
 import email.utils
@@ -189,6 +190,7 @@ def organize():
         # Só tratamos como problema real se a pasta não existir DEPOIS de tentarmos criar.
         if modo_real:
             imap.create(QUARANTINE_FOLDER)
+            imap.subscribe(QUARANTINE_FOLDER)  # torna a pasta visível em webmails/clientes de e-mail
             status_lista, pastas = imap.list()
             pasta_existe = status_lista == "OK" and any(
                 QUARANTINE_FOLDER.encode() in (p or b"") for p in pastas
@@ -302,6 +304,110 @@ def ver_quarentena():
             })
 
         return jsonify({"ok": True, "total": len(mensagens), "mensagens": mensagens})
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+def extrair_texto_seguro(msg):
+    """
+    Extrai apenas o texto do e-mail, de forma segura:
+    - Nunca executa nem baixa anexos.
+    - Prefere a versão em texto puro (text/plain).
+    - Se só houver HTML, remove todas as tags e scripts, deixando só o texto.
+    - Substitui links por um aviso, para que nada seja clicável.
+    """
+    corpo = ""
+    if msg.is_multipart():
+        for parte in msg.walk():
+            tipo = parte.get_content_type()
+            disposicao = str(parte.get("Content-Disposition") or "")
+            if "attachment" in disposicao:
+                continue  # nunca extrai anexos
+            if tipo == "text/plain" and not corpo:
+                payload = parte.get_payload(decode=True) or b""
+                corpo = payload.decode(parte.get_content_charset() or "utf-8", errors="replace")
+        if not corpo:
+            for parte in msg.walk():
+                if parte.get_content_type() == "text/html":
+                    payload = parte.get_payload(decode=True) or b""
+                    html = payload.decode(parte.get_content_charset() or "utf-8", errors="replace")
+                    html = re.sub(r"<script.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+                    html = re.sub(r"<style.*?</style>", " ", html, flags=re.DOTALL | re.IGNORECASE)
+                    corpo = re.sub(r"<[^>]+>", " ", html)  # remove todas as tags restantes
+                    break
+    else:
+        payload = msg.get_payload(decode=True) or b""
+        texto = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+        if msg.get_content_type() == "text/html":
+            texto = re.sub(r"<script.*?</script>", " ", texto, flags=re.DOTALL | re.IGNORECASE)
+            texto = re.sub(r"<style.*?</style>", " ", texto, flags=re.DOTALL | re.IGNORECASE)
+            texto = re.sub(r"<[^>]+>", " ", texto)
+        corpo = texto
+
+    corpo = re.sub(r"https?://\S+", "[link removido por segurança]", corpo)
+    corpo = re.sub(r"[ \t]+", " ", corpo)
+    corpo = re.sub(r"\n{3,}", "\n\n", corpo).strip()
+
+    anexos = []
+    if msg.is_multipart():
+        for parte in msg.walk():
+            disposicao = str(parte.get("Content-Disposition") or "")
+            if "attachment" in disposicao:
+                nome = parte.get_filename() or "arquivo_sem_nome"
+                anexos.append(decode_str(nome))
+
+    return corpo[:5000], anexos  # limite de 5000 caracteres por segurança/tamanho
+
+
+@app.route("/quarentena/ver", methods=["GET"])
+def ver_email_quarentena():
+    """
+    Visualização SEGURA de um e-mail específico da Quarentena.
+    Uso: /quarentena/ver?id=123
+    Mostra só texto (nunca HTML renderizado, nunca anexos, nunca links clicáveis).
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    msg_id = request.args.get("id", "").strip()
+    if not msg_id:
+        return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        if status != "OK":
+            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+
+        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
+
+        raw_email = msg_data[0][1]
+        msg = email.message_from_bytes(raw_email)
+
+        from_header = msg.get("From", "")
+        _, endereco = email.utils.parseaddr(from_header)
+        corpo, anexos = extrair_texto_seguro(msg)
+
+        return jsonify({
+            "ok": True,
+            "de": endereco.lower(),
+            "assunto": decode_str(msg.get("Subject")),
+            "data": msg.get("Date"),
+            "corpo_seguro": corpo,
+            "anexos_encontrados_mas_nao_baixados": anexos,
+            "aviso": "Links foram removidos e anexos não foram baixados, por segurança.",
+        })
 
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
