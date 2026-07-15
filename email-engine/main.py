@@ -284,6 +284,9 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
     Caixa de Entrada (ex.: o usuário arrastou manualmente no Outlook/Gmail).
     Se sim, aprova o remetente automaticamente e marca o histórico como resolvido.
     Retorna a lista de aprovações feitas por esse caminho.
+
+    PRÉ-REQUISITO: quem chama esta função precisa já ter selecionado a pasta
+    INBOX no objeto 'imap' (com o modo de acesso correto) ANTES de chamar.
     """
     if not DATABASE_URL:
         return []
@@ -302,10 +305,10 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
     if not pendentes:
         return []
 
-    status, _ = imap.select("INBOX", readonly=True)
-    if status != "OK":
-        return []
-
+    # NOTA: não re-selecionamos a pasta INBOX aqui de propósito — quem chama esta
+    # função já deve ter selecionado a INBOX no modo correto (leitura/escrita).
+    # Re-selecionar aqui como 'somente leitura' rebaixaria o acesso e quebraria
+    # operações de escrita feitas depois (mover/apagar e-mails).
     status, data = imap.search(None, "ALL")
     if status != "OK":
         return []
