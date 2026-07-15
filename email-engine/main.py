@@ -34,6 +34,18 @@ EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
 QUARANTINE_FOLDER = os.environ.get("QUARANTINE_FOLDER_NAME", "INBOX.Quarentena")
 
+# Subpastas dentro da Quarentena, separando por nível de risco (o "joio do trigo"):
+# - Geral: remetentes desconhecidos comuns (baixo risco, geralmente newsletter/contato novo)
+# - Alerta Institucional: possível falsificação de banco/governo (alto risco, exige atenção)
+# No formato padrão (Locaweb), subpastas usam "." como separador. Em provedores
+# com outro separador (ex.: Gmail, que usa "/"), ajuste essas variáveis.
+QUARENTENA_SUBPASTA_GERAL = os.environ.get(
+    "QUARENTENA_SUBPASTA_GERAL", f"{QUARANTINE_FOLDER}.Geral"
+)
+QUARENTENA_SUBPASTA_INSTITUCIONAL = os.environ.get(
+    "QUARENTENA_SUBPASTA_INSTITUCIONAL", f"{QUARANTINE_FOLDER}.Alerta-Institucional"
+)
+
 # Nome da pasta de "Enviados" — também varia por provedor, igual a Quarentena:
 # Locaweb: "INBOX.enviadas" | Gmail: "[Gmail]/E-mails enviados" | Outlook: "Sent Items"
 SENT_FOLDER = os.environ.get("SENT_FOLDER_NAME", "INBOX.enviadas")
@@ -239,6 +251,41 @@ def carregar_whitelist():
     return whitelist
 
 
+def obter_estado(chave: str):
+    """Lê um valor guardado (ex.: 'último UID processado'). Retorna None se não existir ou faltar banco."""
+    if not DATABASE_URL:
+        return None
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT valor FROM gatekeeper_estado WHERE chave = %s;", (chave,))
+                linha = cur.fetchone()
+                return linha[0] if linha else None
+    except Exception as e:
+        print(f"Aviso: não foi possível ler estado ({chave}): {e}", file=sys.stderr, flush=True)
+        return None
+
+
+def salvar_estado(chave: str, valor: str):
+    """Guarda um valor (ex.: 'último UID processado') para ser lembrado na próxima execução."""
+    if not DATABASE_URL:
+        return
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_estado (chave, valor, atualizado_em)
+                    VALUES (%s, %s, now())
+                    ON CONFLICT (chave) DO UPDATE SET valor = EXCLUDED.valor, atualizado_em = now();
+                    """,
+                    (chave, valor),
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"Aviso: não foi possível salvar estado ({chave}): {e}", file=sys.stderr, flush=True)
+
+
 def aprovar_remetente(email_addr: str):
     """Adiciona um e-mail permanentemente à Lista Branca (tabela gatekeeper_whitelist)."""
     if not DATABASE_URL:
@@ -309,29 +356,19 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
     if not pendentes:
         return []
 
-    # NOTA: não re-selecionamos a pasta INBOX aqui de propósito — quem chama esta
-    # função já deve ter selecionado a INBOX no modo correto (leitura/escrita).
-    # Re-selecionar aqui como 'somente leitura' rebaixaria o acesso e quebraria
-    # operações de escrita feitas depois (mover/apagar e-mails).
-    status, data = imap.search(None, "ALL")
-    if status != "OK":
-        return []
-
-    ids_na_caixa = data[0].split()
-    message_ids_na_caixa = set()
-    for msg_id in ids_na_caixa:
-        status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
-        if status != "OK" or not msg_data or not msg_data[0]:
-            continue
-        raw = msg_data[0][1].decode("utf-8", errors="replace")
-        parsed = email.message_from_string(raw)
-        mid = (parsed.get("Message-ID") or "").strip()
-        if mid:
-            message_ids_na_caixa.add(mid)
-
+    # OTIMIZAÇÃO: em vez de listar TODA a Caixa de Entrada e comparar (o que
+    # seria lento em caixas com milhares de e-mails), pedimos ao próprio
+    # servidor para procurar, um a um, só os Message-IDs específicos que
+    # estão pendentes — o servidor já sabe fazer essa busca com eficiência.
     aprovados_agora = []
     for message_id, remetente, assunto in pendentes:
-        if message_id in message_ids_na_caixa:
+        if not message_id:
+            continue
+        criterio = f'HEADER "Message-ID" "{message_id}"'
+        status, data = imap.uid("search", None, criterio)
+        encontrado = status == "OK" and data and data[0]
+
+        if encontrado:
             ok, _ = aprovar_remetente(remetente)
             if ok:
                 try:
@@ -575,32 +612,44 @@ def organize():
     Por padrão, roda em MODO SIMULAÇÃO (não mexe em nada) — só mostra o
     que faria. Para executar de verdade (mover os e-mails), é preciso
     acessar com ?confirmar=sim no final do endereço.
+
+    OTIMIZAÇÃO: em vez de reler a Caixa de Entrada inteira a cada execução
+    (o que seria lento e arriscado em caixas com milhares de e-mails), o
+    sistema lembra até qual UID (identificador único e crescente de cada
+    e-mail) já processou, e da próxima vez olha só o que é mais novo que
+    isso. Use ?reprocessar_tudo=sim para forçar uma varredura completa
+    (por exemplo, na primeira vez, ou depois de mudanças manuais grandes).
     """
     if not EMAIL_USER or not EMAIL_PASS:
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     modo_real = request.args.get("confirmar", "").lower() == "sim"
+    reprocessar_tudo = request.args.get("reprocessar_tudo", "").lower() == "sim"
     whitelist = carregar_whitelist()
+
+    chave_uid = f"ultimo_uid_processado:{EMAIL_USER}"
+    chave_uidvalidity = f"uidvalidity:{EMAIL_USER}"
 
     imap = None
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
 
-        # Garante que a pasta de Quarentena existe.
-        # imap.create() retorna erro se a pasta já existir — isso é esperado e não é problema.
-        # Só tratamos como problema real se a pasta não existir DEPOIS de tentarmos criar.
+        # Garante que as duas subpastas de Quarentena existem (Geral e Alerta Institucional).
         if modo_real:
-            imap.create(QUARANTINE_FOLDER)
-            imap.subscribe(QUARANTINE_FOLDER)  # torna a pasta visível em webmails/clientes de e-mail
+            for pasta in (QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL):
+                imap.create(pasta)
+                imap.subscribe(pasta)
+
             status_lista, pastas = imap.list()
-            pasta_existe = status_lista == "OK" and any(
-                QUARANTINE_FOLDER.encode() in (p or b"") for p in pastas
+            pastas_confirmadas = status_lista == "OK" and all(
+                any(nome.encode() in (p or b"") for p in pastas)
+                for nome in (QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL)
             )
-            if not pasta_existe:
+            if not pastas_confirmadas:
                 return jsonify({
                     "ok": False,
-                    "error": f"A pasta '{QUARANTINE_FOLDER}' não pôde ser confirmada no servidor. "
+                    "error": "As pastas de Quarentena não puderam ser confirmadas no servidor. "
                              "Por segurança, nada foi movido ou apagado.",
                 }), 500
 
@@ -611,19 +660,53 @@ def organize():
             aprovados_por_movimento = detectar_aprovacoes_por_movimento(imap)
             whitelist = carregar_whitelist()  # recarrega, caso alguma aprovação nova tenha entrado agora
 
-        status, data = imap.search(None, "ALL")
+        # Descobre o UIDVALIDITY atual (um "número de versão" da caixa — se
+        # mudar, o servidor reorganizou tudo e nosso ponteiro salvo não vale mais).
+        uidvalidity_atual = None
+        status_val, dat_val = imap.status("INBOX", "(UIDVALIDITY)")
+        if status_val == "OK" and dat_val and dat_val[0]:
+            m = re.search(rb"UIDVALIDITY (\d+)", dat_val[0])
+            if m:
+                uidvalidity_atual = m.group(1).decode()
+
+        ultimo_uid_salvo = obter_estado(chave_uid)
+        uidvalidity_salva = obter_estado(chave_uidvalidity)
+
+        usar_incremental = (
+            not reprocessar_tudo
+            and ultimo_uid_salvo is not None
+            and uidvalidity_atual is not None
+            and uidvalidity_salva == uidvalidity_atual
+        )
+
+        if usar_incremental:
+            criterio_busca = f"UID {int(ultimo_uid_salvo) + 1}:*"
+        else:
+            criterio_busca = "ALL"
+
+        status, data = imap.uid("search", None, criterio_busca)
         if status != "OK":
             return jsonify({"ok": False, "error": "Não foi possível listar as mensagens"}), 500
 
-        ids = data[0].split()
+        uids = data[0].split()
+        # Proteção extra: alguns servidores, quando "N:*" não encontra nada
+        # com UID maior que N, devolvem a última mensagem existente mesmo
+        # assim. Filtramos de novo aqui, manualmente, por segurança.
+        if usar_incremental:
+            limite = int(ultimo_uid_salvo)
+            uids = [u for u in uids if int(u) > limite]
+
         mantidos = []
         quarentena = []
         falhas = []
         alertas_falsificacao = []
+        maior_uid_visto = int(ultimo_uid_salvo) if (usar_incremental and ultimo_uid_salvo) else 0
 
-        for msg_id in ids:
-            status, msg_data = imap.fetch(
-                msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT AUTHENTICATION-RESULTS MESSAGE-ID)])"
+        for uid in uids:
+            maior_uid_visto = max(maior_uid_visto, int(uid))
+
+            status, msg_data = imap.uid(
+                "fetch", uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT AUTHENTICATION-RESULTS MESSAGE-ID)])"
             )
             if status != "OK" or not msg_data or not msg_data[0]:
                 continue
@@ -657,9 +740,9 @@ def organize():
                     info["idade_do_dominio"] = consultar_idade_dominio(dominio_do_email(endereco))
                     alertas_falsificacao.append(info)
                     if modo_real:
-                        status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
+                        status_copy, _ = imap.uid("copy", uid, QUARANTINE_FOLDER)
                         if status_copy == "OK":
-                            imap.store(msg_id, "+FLAGS", "\\Deleted")
+                            imap.uid("store", uid, "+FLAGS", "\\Deleted")
                             registrar_envio_para_quarentena(message_id, endereco, assunto)
                         else:
                             info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
@@ -670,9 +753,9 @@ def organize():
             else:
                 if modo_real:
                     # TRAVA DE SEGURANÇA: só apaga o original se a cópia for confirmada.
-                    status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
+                    status_copy, _ = imap.uid("copy", uid, QUARANTINE_FOLDER)
                     if status_copy == "OK":
-                        imap.store(msg_id, "+FLAGS", "\\Deleted")
+                        imap.uid("store", uid, "+FLAGS", "\\Deleted")
                         registrar_envio_para_quarentena(message_id, endereco, assunto)
                         quarentena.append(info)
                     else:
@@ -683,10 +766,19 @@ def organize():
 
         if modo_real:
             imap.expunge()
+            # Só avançamos o "ponteiro de progresso" em modo real — uma
+            # simulação nunca deve fazer o sistema "esquecer" de processar
+            # algo de verdade depois.
+            if maior_uid_visto > 0:
+                salvar_estado(chave_uid, str(maior_uid_visto))
+                if uidvalidity_atual is not None:
+                    salvar_estado(chave_uidvalidity, uidvalidity_atual)
 
         resposta = {
             "ok": True,
             "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
+            "processamento": "incremental (só mensagens novas)" if usar_incremental else "completo (caixa inteira)",
+            "mensagens_analisadas_nesta_execucao": len(uids),
             "lista_branca_atual": sorted(whitelist),
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
@@ -892,6 +984,111 @@ def renderizar_anexo_como_imagem(nome: str, tipo: str, dados: bytes):
             )
     except Exception as e:
         return None, f"Não foi possível gerar uma prévia segura deste arquivo: {e}"
+
+
+def renderizar_texto_como_imagem(texto: str, cabecalho: str = "") -> bytes:
+    """
+    Desenha um texto (já limpo/seguro) numa imagem PNG nova, do zero — como
+    tirar uma 'foto' do conteúdo. Não interpreta HTML nem nenhum código;
+    só recebe caracteres de texto puro e os desenha na tela, pixel a pixel.
+    Isso elimina qualquer possibilidade de algo escondido 'nas entrelinhas'
+    do e-mail sobreviver à conversão.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    largura = 900
+    margem = 30
+    fonte_corpo = ImageFont.load_default()
+    try:
+        fonte_titulo = ImageFont.load_default(size=16)
+    except TypeError:
+        fonte_titulo = fonte_corpo  # versões antigas do Pillow não aceitam 'size' aqui
+
+    texto_completo = (cabecalho + "\n" + ("-" * 60) + "\n" + texto) if cabecalho else texto
+
+    # Quebra o texto em linhas que cabem na largura da imagem
+    linhas = []
+    for paragrafo in texto_completo.split("\n"):
+        if not paragrafo:
+            linhas.append("")
+            continue
+        palavras = paragrafo.split(" ")
+        linha_atual = ""
+        for palavra in palavras:
+            teste = (linha_atual + " " + palavra).strip()
+            if len(teste) > 100:  # limite aproximado de caracteres por linha
+                linhas.append(linha_atual)
+                linha_atual = palavra
+            else:
+                linha_atual = teste
+        linhas.append(linha_atual)
+
+    altura_linha = 16
+    altura = margem * 2 + len(linhas) * altura_linha
+    altura = max(altura, 200)
+
+    imagem = Image.new("RGB", (largura, altura), color="white")
+    desenho = ImageDraw.Draw(imagem)
+
+    y = margem
+    for i, linha in enumerate(linhas):
+        fonte_usada = fonte_titulo if (cabecalho and i < cabecalho.count("\n") + 1) else fonte_corpo
+        desenho.text((margem, y), linha, fill="black", font=fonte_usada)
+        y += altura_linha
+
+    buffer = io.BytesIO()
+    imagem.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+@app.route("/quarentena/foto", methods=["GET"])
+def foto_email_quarentena():
+    """
+    Rota de TESTE: gera a 'foto' segura (texto renderizado em imagem) do
+    conteúdo de um e-mail da Quarentena — sem apagar nada ainda, só para
+    conferir visualmente como fica o resultado.
+    Uso: /quarentena/foto?id=123
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    msg_id = request.args.get("id", "").strip()
+    if not msg_id:
+        return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        if status != "OK":
+            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+
+        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
+
+        msg = email.message_from_bytes(msg_data[0][1])
+        from_header = msg.get("From", "")
+        _, endereco = email.utils.parseaddr(from_header)
+        assunto = decode_str(msg.get("Subject"))
+        corpo_seguro, anexos = extrair_texto_seguro(msg)
+
+        cabecalho = f"De: {endereco}\nAssunto: {assunto}\nData: {msg.get('Date', '')}"
+        if anexos:
+            cabecalho += f"\nAnexos no original (não incluídos nesta foto): {', '.join(anexos)}"
+
+        imagem_png = renderizar_texto_como_imagem(corpo_seguro, cabecalho)
+        return Response(imagem_png, mimetype="image/png")
+
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
 
 
 @app.route("/quarentena/ver", methods=["GET"])
