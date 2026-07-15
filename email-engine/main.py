@@ -457,6 +457,33 @@ def atualizar_lista_govbr_rota():
     return jsonify({"ok": ok, "mensagem": mensagem})
 
 
+@app.route("/diagnostico-enviados", methods=["GET"])
+def diagnostico_enviados():
+    """Rota de diagnóstico: mostra quantas mensagens o servidor vê na pasta de Enviados configurada."""
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, resposta_select = imap.select(SENT_FOLDER, readonly=True)
+        return jsonify({
+            "ok": True,
+            "pasta_configurada": SENT_FOLDER,
+            "status_ao_abrir_pasta": status,
+            "quantidade_de_mensagens_segundo_o_servidor": resposta_select[0].decode() if status == "OK" else None,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/diagnostico-pastas", methods=["GET"])
 def diagnostico_pastas():
     """
