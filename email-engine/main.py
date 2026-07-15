@@ -787,6 +787,8 @@ def organize():
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
         }
+        if alertas_falsificacao:
+            resposta["alertas_de_possivel_falsificacao_institucional"] = alertas_falsificacao
         if aprovados_por_movimento:
             resposta["aprovados_por_movimento"] = aprovados_por_movimento
         if falhas:
