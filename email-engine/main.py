@@ -28,11 +28,11 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 #   DOMINIOS_INSTITUCIONAIS -> domínios protegidos contra falsificação, separados
 #                              por vírgula. Ex: pf.gov.br,trt.jus.br,correios.com.br
 # ------------------------------------------------------------------
-IMAP_HOST = "email-ssl.com.br"
-IMAP_PORT = 993
+IMAP_HOST = os.environ.get("IMAP_HOST", "email-ssl.com.br")
+IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
-QUARANTINE_FOLDER = "INBOX.Quarentena"
+QUARANTINE_FOLDER = os.environ.get("QUARANTINE_FOLDER_NAME", "INBOX.Quarentena")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 WHITELIST_FIXA = {
@@ -375,7 +375,7 @@ def test_connection():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         imap.select("INBOX", readonly=True)  # readonly=True: impossível alterar a caixa nesta etapa
 
@@ -427,7 +427,7 @@ def list_folders():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         status, pastas = imap.list()
         pastas_legiveis = [p.decode("utf-8", errors="replace") for p in pastas] if status == "OK" else []
@@ -465,7 +465,7 @@ def diagnostico_pastas():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
 
         status_todas, todas = imap.list()
@@ -496,6 +496,30 @@ def diagnostico_pastas():
                 imap.logout()
             except Exception:
                 pass
+
+
+@app.route("/diagnostico-credenciais", methods=["GET"])
+def diagnostico_credenciais():
+    """
+    Rota de diagnóstico: mostra características das credenciais configuradas
+    (tamanho, espaços escondidos, etc.) SEM nunca revelar a senha em si.
+    Ajuda a identificar problemas de 'copiar e colar' na variável EMAIL_PASS.
+    """
+    tem_espaco_inicio_fim = EMAIL_PASS != EMAIL_PASS.strip()
+    tem_espaco_no_meio = " " in EMAIL_PASS.strip()
+    tem_quebra_de_linha = "\n" in EMAIL_PASS or "\r" in EMAIL_PASS
+
+    return jsonify({
+        "email_user_configurado": EMAIL_USER,
+        "email_user_tamanho": len(EMAIL_USER),
+        "email_pass_tamanho": len(EMAIL_PASS),
+        "email_pass_tem_espaco_no_inicio_ou_fim": tem_espaco_inicio_fim,
+        "email_pass_tem_espaco_no_meio": tem_espaco_no_meio,
+        "email_pass_tem_quebra_de_linha_escondida": tem_quebra_de_linha,
+        "imap_host_configurado": IMAP_HOST,
+        "imap_port_configurado": IMAP_PORT,
+        "dica": "Uma senha de app do Google, sem espaços, deve ter exatamente 16 caracteres.",
+    })
 
 
 @app.route("/verificar-dominio", methods=["GET"])
@@ -529,7 +553,7 @@ def organize():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
 
         # Garante que a pasta de Quarentena existe.
@@ -664,7 +688,7 @@ def ver_quarentena():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
         if status != "OK":
@@ -855,7 +879,7 @@ def ver_email_quarentena():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
         if status != "OK":
@@ -911,7 +935,7 @@ def apagar_email_quarentena():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         status, _ = imap.select(QUARANTINE_FOLDER, readonly=not modo_real)
         if status != "OK":
@@ -974,7 +998,7 @@ def ver_anexo_quarentena():
 
     imap = None
     try:
-        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
         status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
         if status != "OK":
