@@ -59,13 +59,12 @@ def signup():
 
     ok, error_detail = save_email(email)
     if not ok:
-        # MODO DE DIAGNÓSTICO TEMPORÁRIO: mostra o erro real para facilitar a
-        # depuração agora. Depois que tudo estiver funcionando, remova o
-        # "detalhe_tecnico" da resposta por segurança.
+        # O detalhe técnico do erro já é registrado nos Logs do Render
+        # (dentro da função save_email) — não é mais exposto na resposta
+        # pública, por segurança.
         return jsonify({
             "ok": False,
             "error": "Não foi possível salvar o cadastro",
-            "detalhe_tecnico": error_detail,
         }), 500
 
     # Envia e-mail de confirmação para quem se cadastrou (via Resend)
