@@ -33,6 +33,10 @@ IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
 QUARANTINE_FOLDER = os.environ.get("QUARANTINE_FOLDER_NAME", "INBOX.Quarentena")
+
+# Nome da pasta de "Enviados" — também varia por provedor, igual a Quarentena:
+# Locaweb: "INBOX.enviadas" | Gmail: "[Gmail]/E-mails enviados" | Outlook: "Sent Items"
+SENT_FOLDER = os.environ.get("SENT_FOLDER_NAME", "INBOX.enviadas")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 WHITELIST_FIXA = {
@@ -1030,6 +1034,129 @@ def ver_anexo_quarentena():
                 imap.logout()
             except Exception:
                 pass
+
+
+@app.route("/sugestoes", methods=["GET"])
+def sugestoes():
+    """
+    Varre a pasta de Enviados e sugere, em lote, quem aprovar na Lista Branca —
+    baseado em para quem o usuário já escreveu antes (curadoria assistida).
+
+    Por segurança/velocidade, olha só as últimas N mensagens enviadas
+    (parâmetro opcional ?limite=300, padrão 300) — em caixas muito grandes,
+    processar o histórico inteiro de uma vez poderia demorar demais.
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    try:
+        limite = int(request.args.get("limite", "300"))
+    except ValueError:
+        limite = 300
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, _ = imap.select(SENT_FOLDER, readonly=True)
+        if status != "OK":
+            return jsonify({
+                "ok": False,
+                "error": f"Não foi possível abrir a pasta de Enviados ('{SENT_FOLDER}'). "
+                         "Se o nome for diferente nesse provedor, configure a variável SENT_FOLDER_NAME.",
+            }), 404
+
+        status, data = imap.search(None, "ALL")
+        if status != "OK":
+            return jsonify({"ok": False, "error": "Não foi possível listar os e-mails enviados"}), 500
+
+        todos_ids = data[0].split()
+        ids_recentes = todos_ids[-limite:] if len(todos_ids) > limite else todos_ids
+
+        contagem = {}
+        for msg_id in ids_recentes:
+            status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (TO)])")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw_header = msg_data[0][1].decode("utf-8", errors="replace")
+            parsed = email.message_from_string(raw_header)
+            destinatarios = email.utils.getaddresses([parsed.get("To", "")])
+            for _, endereco in destinatarios:
+                endereco = endereco.strip().lower()
+                if endereco:
+                    contagem[endereco] = contagem.get(endereco, 0) + 1
+
+        whitelist_atual = carregar_whitelist()
+
+        sugestoes_lista = [
+            {
+                "email": endereco,
+                "vezes_que_voce_escreveu": qtd,
+                "ja_esta_na_lista_branca": endereco in whitelist_atual,
+            }
+            for endereco, qtd in contagem.items()
+        ]
+        sugestoes_lista.sort(key=lambda x: x["vezes_que_voce_escreveu"], reverse=True)
+
+        return jsonify({
+            "ok": True,
+            "total_de_enviados_analisados": len(ids_recentes),
+            "total_de_destinatarios_unicos": len(sugestoes_lista),
+            "sugestoes": sugestoes_lista,
+        })
+
+    except imaplib.IMAP4.error as e:
+        return jsonify({"ok": False, "error": f"Erro de conexão/login IMAP: {e}"}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
+@app.route("/sugestoes/aprovar-todos", methods=["GET"])
+def aprovar_todas_sugestoes():
+    """
+    Aprova, de uma vez, todos os remetentes sugeridos (que ainda não estão na
+    Lista Branca). Por segurança, só executa de verdade com ?confirmar=sim —
+    sem isso, só mostra quem seria aprovado.
+    """
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+
+    resposta_sugestoes = sugestoes()
+    if isinstance(resposta_sugestoes, tuple):
+        return resposta_sugestoes  # propaga erro, se houver
+
+    dados = resposta_sugestoes.get_json()
+    if not dados.get("ok"):
+        return jsonify(dados), 500
+
+    pendentes = [s["email"] for s in dados["sugestoes"] if not s["ja_esta_na_lista_branca"]]
+
+    if not modo_real:
+        return jsonify({
+            "ok": True,
+            "modo": "SIMULAÇÃO — nada foi aprovado",
+            "seriam_aprovados": pendentes,
+            "dica": "Acesse este mesmo link com &confirmar=sim no final para aprovar de verdade.",
+        })
+
+    aprovados = []
+    falharam = []
+    for endereco in pendentes:
+        ok, erro = aprovar_remetente(endereco)
+        if ok:
+            aprovados.append(endereco)
+        else:
+            falharam.append({"email": endereco, "erro": erro})
+
+    resposta = {"ok": True, "modo": "REAL — aprovados de verdade", "aprovados": aprovados}
+    if falharam:
+        resposta["falharam"] = falharam
+    return jsonify(resposta)
 
 
 @app.route("/aprovar", methods=["POST", "GET"])
