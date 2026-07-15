@@ -253,6 +253,95 @@ def aprovar_remetente(email_addr: str):
         return False, str(e)
 
 
+def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: str):
+    """
+    Guarda a 'identidade' (Message-ID) de um e-mail no momento em que ele é
+    movido para a Quarentena. Isso permite, mais tarde, perceber se o próprio
+    usuário moveu esse e-mail de volta para a Caixa de Entrada manualmente
+    (ex.: arrastando no Outlook) — o que é interpretado como uma aprovação.
+    """
+    if not DATABASE_URL or not message_id:
+        return
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO gatekeeper_historico_quarentena (message_id, remetente, assunto)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (message_id) DO NOTHING;
+                    """,
+                    (message_id, remetente.strip().lower(), assunto),
+                )
+            conn.commit()
+    except Exception as e:
+        print(f"Aviso: não foi possível registrar histórico de quarentena: {e}", file=sys.stderr, flush=True)
+
+
+def detectar_aprovacoes_por_movimento(imap) -> list:
+    """
+    Verifica se algum e-mail que estava na Quarentena voltou, sozinho, para a
+    Caixa de Entrada (ex.: o usuário arrastou manualmente no Outlook/Gmail).
+    Se sim, aprova o remetente automaticamente e marca o histórico como resolvido.
+    Retorna a lista de aprovações feitas por esse caminho.
+    """
+    if not DATABASE_URL:
+        return []
+
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT message_id, remetente, assunto FROM gatekeeper_historico_quarentena WHERE resolvido = false;"
+                )
+                pendentes = cur.fetchall()
+    except Exception as e:
+        print(f"Aviso: não foi possível ler histórico de quarentena: {e}", file=sys.stderr, flush=True)
+        return []
+
+    if not pendentes:
+        return []
+
+    status, _ = imap.select("INBOX", readonly=True)
+    if status != "OK":
+        return []
+
+    status, data = imap.search(None, "ALL")
+    if status != "OK":
+        return []
+
+    ids_na_caixa = data[0].split()
+    message_ids_na_caixa = set()
+    for msg_id in ids_na_caixa:
+        status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            continue
+        raw = msg_data[0][1].decode("utf-8", errors="replace")
+        parsed = email.message_from_string(raw)
+        mid = (parsed.get("Message-ID") or "").strip()
+        if mid:
+            message_ids_na_caixa.add(mid)
+
+    aprovados_agora = []
+    for message_id, remetente, assunto in pendentes:
+        if message_id in message_ids_na_caixa:
+            ok, _ = aprovar_remetente(remetente)
+            if ok:
+                try:
+                    with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "UPDATE gatekeeper_historico_quarentena SET resolvido = true WHERE message_id = %s;",
+                                (message_id,),
+                            )
+                        conn.commit()
+                except Exception as e:
+                    print(f"Aviso: falha ao marcar histórico como resolvido: {e}", file=sys.stderr, flush=True)
+                aprovados_agora.append({"de": remetente, "assunto": assunto, "motivo": "movido de volta para a Caixa de Entrada pelo usuário"})
+
+    return aprovados_agora
+
+
 def decode_str(value):
     """Decodifica cabeçalhos de e-mail que podem vir com acentuação especial."""
     if value is None:
@@ -459,6 +548,11 @@ def organize():
 
         imap.select("INBOX", readonly=not modo_real)
 
+        aprovados_por_movimento = []
+        if modo_real:
+            aprovados_por_movimento = detectar_aprovacoes_por_movimento(imap)
+            whitelist = carregar_whitelist()  # recarrega, caso alguma aprovação nova tenha entrado agora
+
         status, data = imap.search(None, "ALL")
         if status != "OK":
             return jsonify({"ok": False, "error": "Não foi possível listar as mensagens"}), 500
@@ -471,7 +565,7 @@ def organize():
 
         for msg_id in ids:
             status, msg_data = imap.fetch(
-                msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT AUTHENTICATION-RESULTS)])"
+                msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT AUTHENTICATION-RESULTS MESSAGE-ID)])"
             )
             if status != "OK" or not msg_data or not msg_data[0]:
                 continue
@@ -482,6 +576,7 @@ def organize():
             _, endereco = email.utils.parseaddr(from_header)
             endereco = endereco.lower()
             assunto = decode_str(parsed.get("Subject"))
+            message_id = (parsed.get("Message-ID") or "").strip()
 
             info = {"de": endereco, "assunto": assunto}
 
@@ -507,6 +602,7 @@ def organize():
                         status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
                         if status_copy == "OK":
                             imap.store(msg_id, "+FLAGS", "\\Deleted")
+                            registrar_envio_para_quarentena(message_id, endereco, assunto)
                         else:
                             info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
                     continue
@@ -519,6 +615,7 @@ def organize():
                     status_copy, _ = imap.copy(msg_id, QUARANTINE_FOLDER)
                     if status_copy == "OK":
                         imap.store(msg_id, "+FLAGS", "\\Deleted")
+                        registrar_envio_para_quarentena(message_id, endereco, assunto)
                         quarentena.append(info)
                     else:
                         info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
@@ -536,6 +633,8 @@ def organize():
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
         }
+        if aprovados_por_movimento:
+            resposta["aprovados_por_movimento"] = aprovados_por_movimento
         if falhas:
             resposta["falhas_nao_apagadas_por_seguranca"] = falhas
         return jsonify(resposta)
