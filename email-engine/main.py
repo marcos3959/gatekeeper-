@@ -740,12 +740,16 @@ def organize():
                     info["idade_do_dominio"] = consultar_idade_dominio(dominio_do_email(endereco))
                     alertas_falsificacao.append(info)
                     if modo_real:
-                        status_copy, _ = imap.uid("copy", uid, QUARANTINE_FOLDER)
-                        if status_copy == "OK":
-                            imap.uid("store", uid, "+FLAGS", "\\Deleted")
+                        # Não guardamos o e-mail original perigoso: geramos uma
+                        # 'foto' segura do conteúdo e só então apagamos o original.
+                        ok_arquivo, detalhe_arquivo = arquivar_alerta_institucional_com_seguranca(
+                            imap, uid, endereco, assunto
+                        )
+                        if ok_arquivo:
                             registrar_envio_para_quarentena(message_id, endereco, assunto)
+                            info["registro_seguro"] = detalhe_arquivo
                         else:
-                            info["motivo_falha"] = "Cópia para a Quarentena falhou — e-mail NÃO foi apagado."
+                            info["motivo_falha"] = detalhe_arquivo
                     continue
 
             if endereco in whitelist:
@@ -753,7 +757,7 @@ def organize():
             else:
                 if modo_real:
                     # TRAVA DE SEGURANÇA: só apaga o original se a cópia for confirmada.
-                    status_copy, _ = imap.uid("copy", uid, QUARANTINE_FOLDER)
+                    status_copy, _ = imap.uid("copy", uid, QUARENTENA_SUBPASTA_GERAL)
                     if status_copy == "OK":
                         imap.uid("store", uid, "+FLAGS", "\\Deleted")
                         registrar_envio_para_quarentena(message_id, endereco, assunto)
@@ -1039,6 +1043,84 @@ def renderizar_texto_como_imagem(texto: str, cabecalho: str = "") -> bytes:
     buffer = io.BytesIO()
     imagem.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def construir_email_de_registro_seguro(endereco_original: str, assunto_original: str, data_original: str, imagem_png: bytes) -> bytes:
+    """
+    Monta um novo e-mail sintético, contendo só a 'foto' segura (imagem) do
+    conteúdo original como anexo — nunca o e-mail original em si. Esse é o
+    e-mail que fica arquivado como prova, no lugar do original perigoso.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.image import MIMEImage
+
+    novo = MIMEMultipart()
+    novo["Subject"] = f"[REGISTRO SEGURO] {assunto_original}"
+    novo["From"] = "gatekeeper-mail@registro-seguro.local"
+    novo["To"] = EMAIL_USER
+    novo["Date"] = email.utils.formatdate(localtime=True)
+
+    texto_explicativo = (
+        f"Este é um REGISTRO SEGURO gerado automaticamente pelo Gatekeeper Mail.\n\n"
+        f"O e-mail original, de '{endereco_original}' (recebido em {data_original}), "
+        f"foi identificado como possível falsificação de domínio institucional.\n\n"
+        f"Por segurança, o e-mail original (que poderia conter anexos ou links "
+        f"maliciosos) foi excluído do servidor. A imagem em anexo mostra o "
+        f"conteúdo de texto do e-mail original, de forma segura, como prova.\n\n"
+        f"AVISO: esta imagem mostra o que o e-mail dizia — isso NÃO significa "
+        f"que o conteúdo é verdadeiro ou confiável."
+    )
+    novo.attach(MIMEText(texto_explicativo, "plain", "utf-8"))
+
+    anexo_imagem = MIMEImage(imagem_png, _subtype="png")
+    anexo_imagem.add_header("Content-Disposition", "attachment", filename="registro_seguro.png")
+    novo.attach(anexo_imagem)
+
+    return novo.as_bytes()
+
+
+def arquivar_alerta_institucional_com_seguranca(imap, uid, endereco: str, assunto: str) -> tuple:
+    """
+    Para um e-mail já identificado como possível falsificação institucional:
+    1. Busca o conteúdo completo do e-mail original.
+    2. Gera uma 'foto' segura (texto renderizado em imagem) do conteúdo.
+    3. Monta um novo e-mail só com essa foto, e o guarda na subpasta de
+       Alerta Institucional (arquivamento seguro, como prova).
+    4. SÓ DEPOIS de confirmar que o registro seguro foi guardado com sucesso,
+       apaga o e-mail original (que pode conter anexos/links perigosos).
+
+    Retorna (sucesso: bool, detalhe: str).
+    """
+    try:
+        status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
+        if status != "OK" or not msg_data or not msg_data[0]:
+            return False, "Não foi possível buscar o conteúdo completo do e-mail original."
+
+        msg_completo = email.message_from_bytes(msg_data[0][1])
+        corpo_seguro, anexos = extrair_texto_seguro(msg_completo)
+        data_original = msg_completo.get("Date", "desconhecida")
+
+        cabecalho = f"De: {endereco}\nAssunto: {assunto}\nData: {data_original}"
+        if anexos:
+            cabecalho += f"\nAnexos no original (não incluídos, nunca baixados): {', '.join(anexos)}"
+
+        imagem_png = renderizar_texto_como_imagem(corpo_seguro, cabecalho)
+        email_registro = construir_email_de_registro_seguro(endereco, assunto, data_original, imagem_png)
+
+        # TRAVA DE SEGURANÇA: só apaga o original depois de confirmar que o
+        # registro seguro foi guardado com sucesso na subpasta institucional.
+        status_append, _ = imap.append(
+            QUARENTENA_SUBPASTA_INSTITUCIONAL, None, None, email_registro
+        )
+        if status_append != "OK":
+            return False, "Falha ao guardar o registro seguro — o e-mail original NÃO foi apagado."
+
+        imap.uid("store", uid, "+FLAGS", "\\Deleted")
+        return True, "Registro seguro guardado; e-mail original perigoso removido."
+
+    except Exception as e:
+        return False, f"Erro ao arquivar com segurança: {e}"
 
 
 @app.route("/quarentena/foto", methods=["GET"])
