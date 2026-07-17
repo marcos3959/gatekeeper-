@@ -625,6 +625,10 @@ def organize():
 
     modo_real = request.args.get("confirmar", "").lower() == "sim"
     reprocessar_tudo = request.args.get("reprocessar_tudo", "").lower() == "sim"
+    try:
+        limite_lote = int(request.args.get("limite", "0"))
+    except ValueError:
+        limite_lote = 0
     whitelist = carregar_whitelist()
 
     chave_uid = f"ultimo_uid_processado:{EMAIL_USER}"
@@ -695,6 +699,12 @@ def organize():
         if usar_incremental:
             limite = int(ultimo_uid_salvo)
             uids = [u for u in uids if int(u) > limite]
+
+        total_pendente_antes_do_lote = len(uids)
+        lote_parcial = False
+        if limite_lote > 0 and len(uids) > limite_lote:
+            uids = uids[:limite_lote]
+            lote_parcial = True
 
         mantidos = []
         quarentena = []
@@ -787,6 +797,10 @@ def organize():
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
         }
+        if lote_parcial:
+            resposta["lote_parcial"] = True
+            resposta["restam_para_processar"] = total_pendente_antes_do_lote - len(uids)
+            resposta["dica"] = "Acesse o mesmo link de novo para processar o próximo lote."
         if alertas_falsificacao:
             resposta["alertas_de_possivel_falsificacao_institucional"] = alertas_falsificacao
         if aprovados_por_movimento:
