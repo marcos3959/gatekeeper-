@@ -494,6 +494,61 @@ def atualizar_lista_govbr_rota():
     return jsonify({"ok": ok, "mensagem": mensagem})
 
 
+@app.route("/diagnostico-ultima-mensagem", methods=["GET"])
+def diagnostico_ultima_mensagem():
+    """
+    Rota de diagnóstico: mostra a data da mensagem mais recente numa pasta
+    específica — ajuda a saber se uma pasta ainda está 'ativa' (recebendo
+    mensagens novas) ou se é uma pasta antiga, parada no tempo.
+    Uso: /diagnostico-ultima-mensagem?pasta=INBOX.Enviadas
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    pasta = request.args.get("pasta", "").strip()
+    if not pasta:
+        return jsonify({"ok": False, "error": "Informe a pasta em ?pasta="}), 400
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        status, resp = imap.select(pasta, readonly=True)
+        if status != "OK":
+            return jsonify({"ok": False, "error": f"Não foi possível abrir a pasta '{pasta}'"}), 404
+
+        total_mensagens = int(resp[0])
+        status, data = imap.uid("search", None, "ALL")
+        uids = data[0].split() if status == "OK" else []
+
+        if not uids:
+            return jsonify({"ok": True, "pasta": pasta, "total_mensagens": total_mensagens, "ultima_mensagem": None})
+
+        ultimo_uid = uids[-1]
+        status, msg_data = imap.uid("fetch", ultimo_uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+        raw_header = msg_data[0][1].decode("utf-8", errors="replace")
+        parsed = email.message_from_string(raw_header)
+
+        return jsonify({
+            "ok": True,
+            "pasta": pasta,
+            "total_mensagens": total_mensagens,
+            "ultima_mensagem": {
+                "data": parsed.get("Date"),
+                "de": parsed.get("From"),
+                "assunto": decode_str(parsed.get("Subject")),
+            },
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/diagnostico-enviados-todos", methods=["GET"])
 def diagnostico_enviados_todos():
     """
