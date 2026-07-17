@@ -1,20 +1,22 @@
 import os
+import base64
 import requests
 import psycopg
-from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # ------------------------------------------------------------------
 # CAMADA 1 — chave guardada no Doppler (separado do Render)
+# Usa AES-256-GCM diretamente: os 256 bits inteiros da chave são usados
+# na criptografia (diferente da técnica anterior, Fernet, que dividia a
+# chave em duas metades de 128 bits — uma para cifrar, outra para
+# autenticar). GCM já garante autenticidade nativamente, com os 256 bits
+# completos dedicados à cifra em si.
 # ------------------------------------------------------------------
 _chave_em_cache = None
 
 
-def _buscar_chave_mestra():
-    """
-    Busca a chave mestra da Camada 1 no Doppler, usando o token de serviço.
-    Guarda em cache (memória) depois da primeira busca, para não chamar a
-    API do Doppler a cada operação.
-    """
+def _buscar_chave_mestra_base64():
+    """Busca a chave mestra da Camada 1 no Doppler (texto base64, como foi gerada)."""
     global _chave_em_cache
     if _chave_em_cache:
         return _chave_em_cache
@@ -35,18 +37,30 @@ def _buscar_chave_mestra():
     return _chave_em_cache
 
 
+def _obter_chave_256_bits() -> bytes:
+    """Decodifica a chave (que vem em base64) para os 32 bytes (256 bits) reais."""
+    chave_base64 = _buscar_chave_mestra_base64()
+    return base64.urlsafe_b64decode(chave_base64)
+
+
 def criptografar_camada1(texto_plano: str) -> str:
-    """Criptografa um texto usando a chave mestra guardada no Doppler."""
-    chave = _buscar_chave_mestra()
-    f = Fernet(chave)
-    return f.encrypt(texto_plano.encode()).decode()
+    """Criptografa um texto com AES-256-GCM, usando os 256 bits completos da chave do Doppler."""
+    chave = _obter_chave_256_bits()
+    aesgcm = AESGCM(chave)
+    nonce = os.urandom(12)  # valor aleatório de uso único, recomendado para GCM
+    cifrado = aesgcm.encrypt(nonce, texto_plano.encode(), None)
+    # Guarda o 'nonce' junto com o resultado cifrado (precisa dele para decifrar depois)
+    return base64.urlsafe_b64encode(nonce + cifrado).decode()
 
 
 def descriptografar_camada1(texto_cifrado: str) -> str:
-    """Reverte a criptografia da Camada 1, usando a chave mestra do Doppler."""
-    chave = _buscar_chave_mestra()
-    f = Fernet(chave)
-    return f.decrypt(texto_cifrado.encode()).decode()
+    """Reverte a criptografia AES-256-GCM da Camada 1."""
+    chave = _obter_chave_256_bits()
+    dados = base64.urlsafe_b64decode(texto_cifrado.encode())
+    nonce, cifrado = dados[:12], dados[12:]
+    aesgcm = AESGCM(chave)
+    texto_plano = aesgcm.decrypt(nonce, cifrado, None)
+    return texto_plano.decode()
 
 
 # ------------------------------------------------------------------
