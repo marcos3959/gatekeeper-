@@ -427,25 +427,52 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
     for message_id, remetente, assunto in pendentes:
         if not message_id:
             continue
-        criterio = f'HEADER "Message-ID" "{message_id}"'
+        # Escapa aspas e barras invertidas, exigido pela sintaxe de string
+        # entre aspas do protocolo IMAP — evita que um Message-ID com
+        # caracteres incomuns 'quebre' a busca de forma imprevisível.
+        message_id_seguro = message_id.replace("\\", "\\\\").replace('"', '\\"')
+        criterio = f'HEADER "Message-ID" "{message_id_seguro}"'
         status, data = imap.uid("search", None, criterio)
-        encontrado = status == "OK" and data and data[0]
+        uids_encontrados = data[0].split() if (status == "OK" and data and data[0]) else []
 
-        if encontrado:
-            ok, _ = aprovar_remetente(remetente)
-            if ok:
-                try:
-                    with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "UPDATE gatekeeper_historico_quarentena SET resolvido = true "
-                                "WHERE message_id = %s AND conta_email = %s;",
-                                (message_id, EMAIL_USER.strip().lower()),
-                            )
-                        conn.commit()
-                except Exception as e:
-                    print(f"Aviso: falha ao marcar histórico como resolvido: {e}", file=sys.stderr, flush=True)
-                aprovados_agora.append({"de": remetente, "assunto": assunto, "motivo": "movido de volta para a Caixa de Entrada pelo usuário"})
+        if not uids_encontrados:
+            continue
+
+        # TRAVA DE SEGURANÇA EXTRA: antes de aprovar qualquer coisa, confirma
+        # de verdade que o remetente do e-mail encontrado bate exatamente com
+        # o esperado — isso impede uma aprovação indevida mesmo que a busca
+        # do servidor, por algum motivo, encontre algo que não devia.
+        uid_encontrado = uids_encontrados[0]
+        status_fetch, msg_data = imap.uid("fetch", uid_encontrado, "(BODY.PEEK[HEADER.FIELDS (FROM)])")
+        remetente_confere = False
+        if status_fetch == "OK" and msg_data and msg_data[0]:
+            raw_from = msg_data[0][1].decode("utf-8", errors="replace")
+            parsed_from = email.message_from_string(raw_from)
+            _, endereco_encontrado = email.utils.parseaddr(parsed_from.get("From", ""))
+            remetente_confere = endereco_encontrado.strip().lower() == remetente.strip().lower()
+
+        if not remetente_confere:
+            print(
+                f"Aviso: aprovação por movimento BLOQUEADA — remetente não confere para message_id={message_id!r} "
+                f"(esperado: {remetente}).",
+                file=sys.stderr, flush=True,
+            )
+            continue
+
+        ok, _ = aprovar_remetente(remetente)
+        if ok:
+            try:
+                with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE gatekeeper_historico_quarentena SET resolvido = true "
+                            "WHERE message_id = %s AND conta_email = %s;",
+                            (message_id, EMAIL_USER.strip().lower()),
+                        )
+                    conn.commit()
+            except Exception as e:
+                print(f"Aviso: falha ao marcar histórico como resolvido: {e}", file=sys.stderr, flush=True)
+            aprovados_agora.append({"de": remetente, "assunto": assunto, "motivo": "movido de volta para a Caixa de Entrada pelo usuário"})
 
     return aprovados_agora
 
