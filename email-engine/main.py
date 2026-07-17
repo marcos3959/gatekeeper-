@@ -30,8 +30,8 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # ------------------------------------------------------------------
 IMAP_HOST = os.environ.get("IMAP_HOST", "email-ssl.com.br")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
-EMAIL_USER = os.environ.get("EMAIL_USER", "")
-EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
+EMAIL_USER = os.environ.get("EMAIL_USER", "").strip()
+EMAIL_PASS = os.environ.get("EMAIL_PASS", "").strip()
 QUARANTINE_FOLDER = os.environ.get("QUARANTINE_FOLDER_NAME", "INBOX.Quarentena")
 
 # Subpastas dentro da Quarentena, separando por nível de risco (o "joio do trigo"):
@@ -49,7 +49,7 @@ QUARENTENA_SUBPASTA_INSTITUCIONAL = os.environ.get(
 # Nome da pasta de "Enviados" — também varia por provedor, igual a Quarentena:
 # Locaweb: "INBOX.enviadas" | Gmail: "[Gmail]/E-mails enviados" | Outlook: "Sent Items"
 SENT_FOLDER = os.environ.get("SENT_FOLDER_NAME", "INBOX.enviadas")
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 WHITELIST_FIXA = {
     e.strip().lower()
@@ -284,6 +284,39 @@ def salvar_estado(chave: str, valor: str):
             conn.commit()
     except Exception as e:
         print(f"Aviso: não foi possível salvar estado ({chave}): {e}", file=sys.stderr, flush=True)
+
+
+def aprovar_remetentes_em_lote(lista_emails: list):
+    """
+    Aprova vários remetentes de uma vez, usando UMA SÓ conexão com o banco
+    de dados (em vez de abrir uma conexão nova para cada e-mail, o que seria
+    lento e arriscado de causar timeout em listas grandes).
+    Retorna (lista_aprovados, lista_falhas).
+    """
+    if not DATABASE_URL:
+        return [], [{"email": e, "erro": "DATABASE_URL não configurado"} for e in lista_emails]
+
+    aprovados = []
+    falharam = []
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                for endereco in lista_emails:
+                    try:
+                        cur.execute(
+                            "INSERT INTO gatekeeper_whitelist (email) VALUES (%s) ON CONFLICT (email) DO NOTHING;",
+                            (endereco.strip().lower(),),
+                        )
+                        aprovados.append(endereco)
+                    except Exception as e:
+                        falharam.append({"email": endereco, "erro": str(e)})
+            conn.commit()
+    except Exception as e:
+        # Se nem a conexão em si funcionar, todos os pendentes falham juntos.
+        print(f"Erro ao aprovar em lote: {e}", file=sys.stderr, flush=True)
+        return [], [{"email": e_addr, "erro": str(e)} for e_addr in lista_emails]
+
+    return aprovados, falharam
 
 
 def aprovar_remetente(email_addr: str):
@@ -1558,14 +1591,7 @@ def aprovar_todas_sugestoes():
             "dica": "Acesse este mesmo link com &confirmar=sim no final para aprovar de verdade.",
         })
 
-    aprovados = []
-    falharam = []
-    for endereco in pendentes:
-        ok, erro = aprovar_remetente(endereco)
-        if ok:
-            aprovados.append(endereco)
-        else:
-            falharam.append({"email": endereco, "erro": erro})
+    aprovados, falharam = aprovar_remetentes_em_lote(pendentes)
 
     resposta = {"ok": True, "modo": "REAL — aprovados de verdade", "aprovados": aprovados}
     if falharam:
