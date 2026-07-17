@@ -227,12 +227,32 @@ def checar_autenticacao(msg) -> dict:
     return resultado
 
 
-def autenticacao_passou(auth: dict) -> bool:
-    """Considera autenticado só se SPF, DKIM e DMARC passaram, sem nenhum 'fail'."""
+def classificar_autenticacao(auth: dict) -> str:
+    """
+    Classifica o resultado da checagem de SPF/DKIM/DMARC em três estados,
+    em vez de só 'passou ou não' — a distinção importa muito na prática:
+
+    - 'passou': pelo menos um protocolo confirmou 'pass', e nenhum falhou.
+    - 'falhou': algum protocolo teve 'fail' explícito — sinal real de alerta.
+    - 'sem_dados': o servidor de e-mail não registrou essa informação (comum
+      em provedores como a Locaweb, diferente do Gmail). Isso NÃO é prova de
+      falsificação — é só ausência de como confirmar. Deve ser tratado com
+      cautela (quarentena), mas sem apagar o e-mail original, já que não há
+      evidência real de fraude.
+    """
     valores = [auth["spf"], auth["dkim"], auth["dmarc"]]
+    if any(v == "fail" for v in valores):
+        return "falhou"
     if all(v == "nao_verificado" for v in valores):
-        return False  # sem nenhuma informação, não podemos confiar
-    return all(v in ("pass", "nao_verificado") for v in valores) and any(v == "pass" for v in valores)
+        return "sem_dados"
+    if any(v == "pass" for v in valores):
+        return "passou"
+    return "sem_dados"
+
+
+def autenticacao_passou(auth: dict) -> bool:
+    """Mantido por compatibilidade — usa a nova classificação por trás dos panos."""
+    return classificar_autenticacao(auth) == "passou"
 
 
 def carregar_whitelist():
@@ -863,20 +883,37 @@ def organize():
             if eh_dominio_institucional(endereco):
                 auth = checar_autenticacao(parsed)
                 dominio_remetente = dominio_do_email(endereco)
+                confirmacao_govbr = None
                 if dominio_remetente.endswith(".gov.br"):
-                    info["confirmacao_lista_oficial_govbr"] = consultar_dominio_na_lista_oficial(dominio_remetente)
-                if autenticacao_passou(auth):
+                    confirmacao_govbr = consultar_dominio_na_lista_oficial(dominio_remetente)
+                    info["confirmacao_lista_oficial_govbr"] = confirmacao_govbr
+
+                classificacao = classificar_autenticacao(auth)
+
+                if classificacao == "passou":
                     info["institucional_verificado"] = True
                     mantidos.append(info)
                     continue
-                else:
-                    info["alerta"] = "POSSÍVEL FALSIFICAÇÃO DE DOMÍNIO INSTITUCIONAL"
-                    info["detalhe_autenticacao"] = auth
-                    info["idade_do_dominio"] = consultar_idade_dominio(dominio_do_email(endereco))
+
+                if classificacao == "sem_dados" and confirmacao_govbr and confirmacao_govbr.get("encontrado"):
+                    # O servidor não registrou SPF/DKIM/DMARC (comum na Locaweb),
+                    # mas o domínio consta na lista oficial do governo — sinal
+                    # de confiança suficiente para manter na Caixa de Entrada.
+                    info["institucional_verificado"] = True
+                    info["observacao"] = "Autenticidade técnica (SPF/DKIM/DMARC) não verificável neste servidor, mas domínio confirmado na lista oficial gov.br."
+                    mantidos.append(info)
+                    continue
+
+                info["detalhe_autenticacao"] = auth
+                info["idade_do_dominio"] = consultar_idade_dominio(dominio_do_email(endereco))
+
+                if classificacao == "falhou":
+                    # Falha CONFIRMADA de autenticidade — tratamento agressivo:
+                    # gera um registro seguro (foto) e apaga o e-mail original,
+                    # que pode conter anexos/links maliciosos de verdade.
+                    info["alerta"] = "POSSÍVEL FALSIFICAÇÃO DE DOMÍNIO INSTITUCIONAL (falha confirmada de autenticação)"
                     alertas_falsificacao.append(info)
                     if modo_real:
-                        # Não guardamos o e-mail original perigoso: geramos uma
-                        # 'foto' segura do conteúdo e só então apagamos o original.
                         ok_arquivo, detalhe_arquivo = arquivar_alerta_institucional_com_seguranca(
                             imap, uid, endereco, assunto
                         )
@@ -885,7 +922,23 @@ def organize():
                             info["registro_seguro"] = detalhe_arquivo
                         else:
                             info["motivo_falha"] = detalhe_arquivo
-                    continue
+                else:
+                    # 'sem_dados': o servidor simplesmente não informa SPF/DKIM/DMARC
+                    # (não é evidência de fraude). Por cautela, colocamos em
+                    # quarentena para revisão manual — mas preservando o e-mail
+                    # ORIGINAL intacto (incluindo anexos reais, como certidões em
+                    # PDF), em vez de substituí-lo por uma foto. Isso evita perder
+                    # documentos legítimos só por falta de dado técnico.
+                    info["alerta"] = "AUTENTICIDADE NÃO VERIFICÁVEL NESTE SERVIDOR — revisar manualmente (documento original preservado)"
+                    alertas_falsificacao.append(info)
+                    if modo_real:
+                        status_copy, _ = imap.uid("copy", uid, QUARENTENA_SUBPASTA_INSTITUCIONAL)
+                        if status_copy == "OK":
+                            imap.uid("store", uid, "+FLAGS", "\\Deleted")
+                            registrar_envio_para_quarentena(message_id, endereco, assunto)
+                        else:
+                            info["motivo_falha"] = "Cópia para a Quarentena institucional falhou — e-mail NÃO foi apagado."
+                continue
 
             if endereco in whitelist:
                 mantidos.append(info)
