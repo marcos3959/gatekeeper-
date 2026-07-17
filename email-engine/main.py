@@ -494,6 +494,43 @@ def atualizar_lista_govbr_rota():
     return jsonify({"ok": ok, "mensagem": mensagem})
 
 
+@app.route("/diagnostico-enviados-todos", methods=["GET"])
+def diagnostico_enviados_todos():
+    """
+    Rota de diagnóstico: verifica quantas mensagens existem em VÁRIAS pastas
+    candidatas a 'Enviados' de uma vez — útil quando a caixa tem várias
+    pastas parecidas (comum em contas antigas, com anos de uso).
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    candidatas = [
+        "INBOX.Sent", "INBOX.enviadas", "INBOX.Enviadas",
+        "INBOX.Itens Enviados", "INBOX.Sent Items", "INBOX.Sent Messages",
+    ]
+
+    imap = None
+    resultado = {}
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+        for pasta in candidatas:
+            try:
+                status, resp = imap.select(pasta, readonly=True)
+                resultado[pasta] = resp[0].decode() if status == "OK" else f"erro ({status})"
+            except Exception as e:
+                resultado[pasta] = f"erro: {e}"
+        return jsonify({"ok": True, "quantidade_de_mensagens_por_pasta": resultado})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/diagnostico-enviados", methods=["GET"])
 def diagnostico_enviados():
     """Rota de diagnóstico: mostra quantas mensagens o servidor vê na pasta de Enviados configurada."""
