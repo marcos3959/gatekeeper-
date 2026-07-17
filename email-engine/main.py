@@ -786,6 +786,58 @@ def verificar_dominio():
     return jsonify({"ok": True, "dominio": dominio, **info})
 
 
+@app.route("/organize-visual", methods=["GET"])
+def organize_visual():
+    """
+    Mesma lógica do /organize, mas mostra o resultado como uma página visual,
+    organizada em seções — bem mais fácil de acompanhar com os olhos do que
+    um bloco só de texto (JSON).
+    """
+    resposta_organize = organize()
+    if isinstance(resposta_organize, tuple):
+        corpo, status = resposta_organize
+        dados = corpo.get_json()
+    else:
+        dados = resposta_organize.get_json()
+
+    if not dados.get("ok"):
+        return f"<h1 style='font-family:sans-serif;color:#b00'>Erro</h1><p style='font-family:sans-serif'>{dados.get('error', 'Erro desconhecido')}</p>"
+
+    def linha(item, extra=""):
+        assunto = (item.get("assunto") or "(sem assunto)")[:90]
+        return f"<tr><td style='padding:6px 10px;border-bottom:1px solid #333'>{item.get('de','')}</td><td style='padding:6px 10px;border-bottom:1px solid #333'>{assunto}</td><td style='padding:6px 10px;border-bottom:1px solid #333;color:#999'>{extra}</td></tr>"
+
+    def tabela(titulo, itens, cor, vazio_msg):
+        if not itens:
+            return f"<h2 style='color:{cor};font-family:sans-serif;margin-top:30px'>{titulo} (0)</h2><p style='font-family:sans-serif;color:#888'>{vazio_msg}</p>"
+        linhas = "".join(linha(i) for i in itens)
+        return f"""
+        <h2 style='color:{cor};font-family:sans-serif;margin-top:30px'>{titulo} ({len(itens)})</h2>
+        <table style='width:100%;border-collapse:collapse;font-family:sans-serif;font-size:14px'>
+        <tr style='text-align:left;color:#aaa'><th style='padding:6px 10px'>De</th><th style='padding:6px 10px'>Assunto</th><th></th></tr>
+        {linhas}
+        </table>
+        """
+
+    html = f"""
+    <html><head><meta charset="utf-8"><title>Resultado do /organize</title></head>
+    <body style='background:#111;color:#eee;padding:30px;max-width:900px;margin:0 auto'>
+    <h1 style='font-family:sans-serif'>Resultado desta execução</h1>
+    <p style='font-family:sans-serif;color:#aaa'>
+        Modo: <b>{dados.get('modo')}</b> |
+        Processamento: {dados.get('processamento')} |
+        Analisadas agora: {dados.get('mensagens_analisadas_nesta_execucao')} |
+        Restam: {dados.get('restam_para_processar', 0)}
+    </p>
+    {tabela("✅ Mantidos na Caixa de Entrada (já confiáveis)", dados.get("mantidos_na_caixa_de_entrada", []), "#4caf50", "Nenhum e-mail confiável neste lote.")}
+    {tabela("📥 Movidos para Quarentena (desconhecidos)", dados.get("movidos_para_quarentena", []), "#ffa726", "Nenhum e-mail desconhecido neste lote.")}
+    {tabela("🚨 Alertas de possível falsificação institucional", dados.get("alertas_de_possivel_falsificacao_institucional", []), "#e53935", "Nenhum alerta institucional neste lote.")}
+    {tabela("↩️ Aprovados por movimento (você moveu de volta)", dados.get("aprovados_por_movimento", []), "#42a5f5", "Nenhuma aprovação por movimento neste lote — isso é o esperado, a não ser que você tenha movido algo manualmente.")}
+    </body></html>
+    """
+    return html
+
+
 @app.route("/organize", methods=["GET"])
 def organize():
     """
