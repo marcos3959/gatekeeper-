@@ -363,6 +363,11 @@ def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: st
     movido para a Quarentena. Isso permite, mais tarde, perceber se o próprio
     usuário moveu esse e-mail de volta para a Caixa de Entrada manualmente
     (ex.: arrastando no Outlook) — o que é interpretado como uma aprovação.
+
+    IMPORTANTE: o registro é feito por CONTA (EMAIL_USER) — e-mails de
+    newsletter costumam ter o mesmo Message-ID para todos os destinatários,
+    então sem essa separação, o histórico de uma conta poderia 'colidir'
+    com o de outra conta diferente.
     """
     if not DATABASE_URL or not message_id:
         return
@@ -371,11 +376,11 @@ def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: st
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO gatekeeper_historico_quarentena (message_id, remetente, assunto)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (message_id) DO NOTHING;
+                    INSERT INTO gatekeeper_historico_quarentena (message_id, conta_email, remetente, assunto)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (message_id, conta_email) DO NOTHING;
                     """,
-                    (message_id, remetente.strip().lower(), assunto),
+                    (message_id, EMAIL_USER.strip().lower(), remetente.strip().lower(), assunto),
                 )
             conn.commit()
     except Exception as e:
@@ -389,6 +394,9 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
     Se sim, aprova o remetente automaticamente e marca o histórico como resolvido.
     Retorna a lista de aprovações feitas por esse caminho.
 
+    IMPORTANTE: só olha o histórico DESTA conta (EMAIL_USER) — nunca o de
+    outras contas que compartilhem o mesmo banco de dados.
+
     PRÉ-REQUISITO: quem chama esta função precisa já ter selecionado a pasta
     INBOX no objeto 'imap' (com o modo de acesso correto) ANTES de chamar.
     """
@@ -399,7 +407,9 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
         with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT message_id, remetente, assunto FROM gatekeeper_historico_quarentena WHERE resolvido = false;"
+                    "SELECT message_id, remetente, assunto FROM gatekeeper_historico_quarentena "
+                    "WHERE resolvido = false AND conta_email = %s;",
+                    (EMAIL_USER.strip().lower(),),
                 )
                 pendentes = cur.fetchall()
     except Exception as e:
@@ -428,8 +438,9 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
                     with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
                         with conn.cursor() as cur:
                             cur.execute(
-                                "UPDATE gatekeeper_historico_quarentena SET resolvido = true WHERE message_id = %s;",
-                                (message_id,),
+                                "UPDATE gatekeeper_historico_quarentena SET resolvido = true "
+                                "WHERE message_id = %s AND conta_email = %s;",
+                                (message_id, EMAIL_USER.strip().lower()),
                             )
                         conn.commit()
                 except Exception as e:
