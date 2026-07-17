@@ -68,14 +68,30 @@ def descriptografar_camada1(texto_cifrado: str) -> str:
 # ------------------------------------------------------------------
 
 def guardar_no_vault(database_url: str, nome_unico: str, valor_ja_cifrado: str, descricao: str = ""):
-    """Guarda um valor (já cifrado pela Camada 1) dentro do Supabase Vault."""
+    """
+    Guarda um valor (já cifrado pela Camada 1) dentro do Supabase Vault.
+    Se já existir um segredo com esse mesmo nome, ATUALIZA em vez de tentar
+    criar de novo (importante para quando o usuário troca a senha de app
+    de uma conta que já estava cadastrada).
+    """
     with psycopg.connect(database_url, connect_timeout=10) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "select vault.create_secret(%s, %s, %s);",
-                (valor_ja_cifrado, nome_unico, descricao),
-            )
-            resultado = cur.fetchone()
+            cur.execute("select id from vault.secrets where name = %s;", (nome_unico,))
+            existente = cur.fetchone()
+
+            if existente:
+                secret_id = existente[0]
+                cur.execute(
+                    "select vault.update_secret(%s, %s, %s, %s);",
+                    (secret_id, valor_ja_cifrado, nome_unico, descricao),
+                )
+                resultado = (secret_id,)
+            else:
+                cur.execute(
+                    "select vault.create_secret(%s, %s, %s);",
+                    (valor_ja_cifrado, nome_unico, descricao),
+                )
+                resultado = cur.fetchone()
         conn.commit()
     return resultado[0] if resultado else None
 
