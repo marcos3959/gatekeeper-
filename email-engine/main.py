@@ -876,6 +876,12 @@ def organize():
 
         # Garante que as duas subpastas de Quarentena existem (Geral e Alerta Institucional).
         if modo_real:
+            # Inscreve também a pasta 'pai' (INBOX.Quarentena) — mesmo ela não
+            # guardando e-mail nenhum diretamente (só serve de 'gaveta' para
+            # as duas subpastas), alguns clientes de e-mail (como o Outlook)
+            # só mostram a árvore de pastas corretamente se o 'pai' também
+            # estiver inscrito, não só as filhas.
+            imap.subscribe(QUARANTINE_FOLDER)
             for pasta in (QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL):
                 imap.create(pasta)
                 imap.subscribe(pasta)
