@@ -3,6 +3,7 @@ import sys
 import re
 import csv
 import io
+import threading
 import imaplib
 import email
 import email.utils
@@ -387,7 +388,7 @@ def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: st
         print(f"Aviso: não foi possível registrar histórico de quarentena: {e}", file=sys.stderr, flush=True)
 
 
-def detectar_aprovacoes_por_movimento(imap) -> list:
+def detectar_aprovacoes_por_movimento(imap, limite_pendentes: int = 15) -> list:
     """
     Verifica se algum e-mail que estava na Quarentena voltou, sozinho, para a
     Caixa de Entrada (ex.: o usuário arrastou manualmente no Outlook/Gmail).
@@ -396,6 +397,12 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
 
     IMPORTANTE: só olha o histórico DESTA conta (EMAIL_USER) — nunca o de
     outras contas que compartilhem o mesmo banco de dados.
+
+    Por segurança de desempenho, só confere um número limitado de pendências
+    por execução (padrão: 15) — sem isso, o tempo desta função cresceria sem
+    limite conforme o histórico de pendências acumula, arriscando estourar o
+    tempo-limite de agendadores externos (como o cron-job.org, com teto de
+    30 segundos no plano gratuito). O que sobrar é conferido na próxima execução.
 
     PRÉ-REQUISITO: quem chama esta função precisa já ter selecionado a pasta
     INBOX no objeto 'imap' (com o modo de acesso correto) ANTES de chamar.
@@ -408,8 +415,9 @@ def detectar_aprovacoes_por_movimento(imap) -> list:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT message_id, remetente, assunto FROM gatekeeper_historico_quarentena "
-                    "WHERE resolvido = false AND conta_email = %s;",
-                    (EMAIL_USER.strip().lower(),),
+                    "WHERE resolvido = false AND conta_email = %s "
+                    "ORDER BY movido_para_quarentena_em DESC LIMIT %s;",
+                    (EMAIL_USER.strip().lower(), limite_pendentes),
                 )
                 pendentes = cur.fetchall()
     except Exception as e:
@@ -784,6 +792,41 @@ def verificar_dominio():
         return jsonify({"ok": False, "error": "Informe um domínio em ?dominio="}), 400
     info = consultar_idade_dominio(dominio)
     return jsonify({"ok": True, "dominio": dominio, **info})
+
+
+@app.route("/organize-async", methods=["GET"])
+def organize_async():
+    """
+    Dispara o /organize em SEGUNDO PLANO, sem esperar o processamento
+    terminar — pensado especificamente para agendadores externos com
+    tempo-limite curto (ex.: cron-job.org, plano gratuito, teto de 30s).
+
+    Responde imediatamente ('processamento iniciado'), enquanto o
+    processamento de verdade continua rodando no servidor. Para conferir
+    o resultado depois, use /organize-visual ou os relatórios.
+
+    Aceita os mesmos parâmetros do /organize (confirmar, limite, etc.) —
+    eles são repassados por baixo dos panos.
+    """
+    query_string = request.query_string.decode()
+    url_interna = request.url_root.rstrip("/") + "/organize"
+    if query_string:
+        url_interna += "?" + query_string
+
+    def _disparar_em_segundo_plano():
+        try:
+            requests.get(url_interna, timeout=300)
+        except Exception as e:
+            print(f"Aviso: processamento em segundo plano terminou com erro: {e}", file=sys.stderr, flush=True)
+
+    thread = threading.Thread(target=_disparar_em_segundo_plano, daemon=True)
+    thread.start()
+
+    return jsonify({
+        "ok": True,
+        "mensagem": "Processamento iniciado em segundo plano — não espere esta resposta para saber o resultado.",
+        "dica": "Confira o resultado depois em /organize-visual ou nos relatórios.",
+    })
 
 
 @app.route("/organize-visual", methods=["GET"])
