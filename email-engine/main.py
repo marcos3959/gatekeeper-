@@ -1056,6 +1056,25 @@ def organize():
                 if uidvalidity_atual is not None:
                     salvar_estado(chave_uidvalidity, uidvalidity_atual)
 
+        modo_resumido = request.args.get("resumo", "").lower() == "sim"
+
+        if modo_resumido:
+            resposta = {
+                "ok": True,
+                "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
+                "processamento": "incremental (só mensagens novas)" if usar_incremental else "completo (caixa inteira)",
+                "mensagens_analisadas_nesta_execucao": len(uids),
+                "total_mantidos": len(mantidos),
+                "total_quarentena": len(quarentena),
+                "total_alertas_institucionais": len(alertas_falsificacao),
+                "total_aprovados_por_movimento": len(aprovados_por_movimento),
+                "total_falhas": len(falhas),
+            }
+            if lote_parcial:
+                resposta["lote_parcial"] = True
+                resposta["restam_para_processar"] = total_pendente_antes_do_lote - len(uids)
+            return jsonify(resposta)
+
         resposta = {
             "ok": True,
             "modo": "REAL — e-mails movidos de verdade" if modo_real else "SIMULAÇÃO — nada foi alterado",
