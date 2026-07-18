@@ -1188,9 +1188,92 @@ def organize():
                 pass
 
 
+def _listar_pasta_quarentena(imap, pasta: str, categoria: str) -> list:
+    """Lista as mensagens de uma subpasta específica da Quarentena, com a categoria já marcada."""
+    status, _ = imap.select(pasta, readonly=True)
+    if status != "OK":
+        return []
+
+    status, data = imap.uid("search", None, "ALL")
+    ids = data[0].split() if status == "OK" else []
+
+    mensagens = []
+    for msg_id in ids:
+        try:
+            status, msg_data = imap.uid("fetch", msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            conteudo = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None)
+            raw_header = conteudo.decode("utf-8", errors="replace")
+            parsed = email.message_from_string(raw_header)
+            from_header = parsed.get("From", "")
+            _, endereco = email.utils.parseaddr(from_header)
+            if not endereco:
+                continue
+            mensagens.append({
+                "id": msg_id.decode(),
+                "pasta": pasta,
+                "categoria": categoria,
+                "de": endereco.lower(),
+                "assunto": decode_str(parsed.get("Subject")),
+                "data": parsed.get("Date"),
+            })
+        except Exception as e:
+            print(f"Aviso: pulando mensagem da quarentena por erro: {e}", file=sys.stderr, flush=True)
+            continue
+    return mensagens
+
+
+@app.route("/api/painel/resumo", methods=["GET"])
+def api_painel_resumo():
+    """
+    Resumo pensado especificamente para os cartões do painel: quantos
+    e-mails há na Caixa de Entrada, quantos alertas institucionais, quantos
+    desconhecidos, e status geral da conta.
+    """
+    if not EMAIL_USER or not EMAIL_PASS:
+        return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
+
+    def _contar_mensagens(imap, pasta):
+        try:
+            status, resp = imap.status(pasta, "(MESSAGES)")
+            if status != "OK" or not resp or not resp[0]:
+                return None
+            m = re.search(rb"MESSAGES (\d+)", resp[0])
+            return int(m.group(1)) if m else None
+        except Exception:
+            return None
+
+    imap = None
+    try:
+        imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
+        imap.login(EMAIL_USER, EMAIL_PASS)
+
+        total_caixa_de_entrada = _contar_mensagens(imap, "INBOX")
+        total_institucional = _contar_mensagens(imap, QUARENTENA_SUBPASTA_INSTITUCIONAL)
+        total_geral = _contar_mensagens(imap, QUARENTENA_SUBPASTA_GERAL)
+
+        return jsonify({
+            "ok": True,
+            "conta_email": EMAIL_USER,
+            "protegida": True,
+            "total_caixa_de_entrada": total_caixa_de_entrada,
+            "total_alerta_institucional": total_institucional,
+            "total_geral": total_geral,
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    finally:
+        if imap is not None:
+            try:
+                imap.logout()
+            except Exception:
+                pass
+
+
 @app.route("/quarentena", methods=["GET"])
 def ver_quarentena():
-    """Lista, somente leitura, o que está guardado na pasta de Quarentena."""
+    """Lista, somente leitura, o que está guardado nas DUAS subpastas de Quarentena (Geral e Alerta-Institucional)."""
     if not EMAIL_USER or not EMAIL_PASS:
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
@@ -1198,28 +1281,10 @@ def ver_quarentena():
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
-        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
-        if status != "OK":
-            return jsonify({"ok": True, "mensagens": [], "aviso": "A pasta de Quarentena ainda não existe ou está vazia."})
-
-        status, data = imap.search(None, "ALL")
-        ids = data[0].split() if status == "OK" else []
 
         mensagens = []
-        for msg_id in ids:
-            status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])")
-            if status != "OK" or not msg_data or not msg_data[0]:
-                continue
-            raw_header = msg_data[0][1].decode("utf-8", errors="replace")
-            parsed = email.message_from_string(raw_header)
-            from_header = parsed.get("From", "")
-            _, endereco = email.utils.parseaddr(from_header)
-            mensagens.append({
-                "id": msg_id.decode(),
-                "de": endereco.lower(),
-                "assunto": decode_str(parsed.get("Subject")),
-                "data": parsed.get("Date"),
-            })
+        mensagens += _listar_pasta_quarentena(imap, QUARENTENA_SUBPASTA_INSTITUCIONAL, "institucional")
+        mensagens += _listar_pasta_quarentena(imap, QUARENTENA_SUBPASTA_GERAL, "geral")
 
         return jsonify({"ok": True, "total": len(mensagens), "mensagens": mensagens})
 
@@ -1510,12 +1575,13 @@ def foto_email_quarentena():
     Rota de TESTE: gera a 'foto' segura (texto renderizado em imagem) do
     conteúdo de um e-mail da Quarentena — sem apagar nada ainda, só para
     conferir visualmente como fica o resultado.
-    Uso: /quarentena/foto?id=123
+    Uso: /quarentena/foto?id=123&pasta=INBOX.Quarentena.Geral
     """
     if not EMAIL_USER or not EMAIL_PASS:
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     msg_id = request.args.get("id", "").strip()
+    pasta = request.args.get("pasta", QUARENTENA_SUBPASTA_GERAL).strip()
     if not msg_id:
         return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
 
@@ -1523,15 +1589,16 @@ def foto_email_quarentena():
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
-        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        status, _ = imap.select(pasta, readonly=True)
         if status != "OK":
-            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+            return jsonify({"ok": False, "error": f"A pasta '{pasta}' não existe"}), 404
 
-        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        status, msg_data = imap.uid("fetch", msg_id.encode(), "(BODY.PEEK[])")
         if status != "OK" or not msg_data or not msg_data[0]:
             return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
 
-        msg = email.message_from_bytes(msg_data[0][1])
+        conteudo = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None)
+        msg = email.message_from_bytes(conteudo)
         from_header = msg.get("From", "")
         _, endereco = email.utils.parseaddr(from_header)
         assunto = decode_str(msg.get("Subject"))
@@ -1558,13 +1625,16 @@ def foto_email_quarentena():
 def ver_email_quarentena():
     """
     Visualização SEGURA de um e-mail específico da Quarentena.
-    Uso: /quarentena/ver?id=123
+    Uso: /quarentena/ver?id=123&pasta=INBOX.Quarentena.Geral
+    (o parâmetro 'pasta' identifica em qual subpasta procurar — Geral ou
+    Alerta-Institucional; se não informado, tenta a Geral por padrão)
     Mostra só texto (nunca HTML renderizado, nunca anexos, nunca links clicáveis).
     """
     if not EMAIL_USER or not EMAIL_PASS:
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     msg_id = request.args.get("id", "").strip()
+    pasta = request.args.get("pasta", QUARENTENA_SUBPASTA_GERAL).strip()
     if not msg_id:
         return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
 
@@ -1572,15 +1642,15 @@ def ver_email_quarentena():
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
-        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        status, _ = imap.select(pasta, readonly=True)
         if status != "OK":
-            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+            return jsonify({"ok": False, "error": f"A pasta '{pasta}' não existe"}), 404
 
-        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        status, msg_data = imap.uid("fetch", msg_id.encode(), "(BODY.PEEK[])")
         if status != "OK" or not msg_data or not msg_data[0]:
             return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
 
-        raw_email = msg_data[0][1]
+        raw_email = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None)
         msg = email.message_from_bytes(raw_email)
 
         from_header = msg.get("From", "")
@@ -1619,6 +1689,7 @@ def apagar_email_quarentena():
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     msg_id = request.args.get("id", "").strip()
+    pasta = request.args.get("pasta", QUARENTENA_SUBPASTA_GERAL).strip()
     if not msg_id:
         return jsonify({"ok": False, "error": "Informe o número do e-mail em ?id="}), 400
 
@@ -1628,15 +1699,16 @@ def apagar_email_quarentena():
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
-        status, _ = imap.select(QUARANTINE_FOLDER, readonly=not modo_real)
+        status, _ = imap.select(pasta, readonly=not modo_real)
         if status != "OK":
-            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+            return jsonify({"ok": False, "error": f"A pasta '{pasta}' não existe"}), 404
 
-        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
+        status, msg_data = imap.uid("fetch", msg_id.encode(), "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])")
         if status != "OK" or not msg_data or not msg_data[0]:
             return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
 
-        parsed = email.message_from_bytes(msg_data[0][1])
+        conteudo = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None)
+        parsed = email.message_from_bytes(conteudo)
         from_header = parsed.get("From", "")
         _, endereco = email.utils.parseaddr(from_header)
         assunto = decode_str(parsed.get("Subject"))
@@ -1649,7 +1721,7 @@ def apagar_email_quarentena():
                 "dica": "Acesse este mesmo link com &confirmar=sim no final para apagar de verdade.",
             })
 
-        imap.store(msg_id.encode(), "+FLAGS", "\\Deleted")
+        imap.uid("store", msg_id.encode(), "+FLAGS", "\\Deleted")
         imap.expunge()
 
         return jsonify({
@@ -1673,12 +1745,13 @@ def ver_anexo_quarentena():
     """
     Mostra uma prévia SEGURA de um anexo de um e-mail da Quarentena — nunca o
     arquivo original, sempre uma imagem redesenhada do zero.
-    Uso: /quarentena/anexo?id=123&indice=0  (indice=0 é o primeiro anexo, 1 o segundo, etc.)
+    Uso: /quarentena/anexo?id=123&indice=0&pasta=INBOX.Quarentena.Geral
     """
     if not EMAIL_USER or not EMAIL_PASS:
         return jsonify({"ok": False, "error": "Faltam as variáveis EMAIL_USER / EMAIL_PASS"}), 500
 
     msg_id = request.args.get("id", "").strip()
+    pasta = request.args.get("pasta", QUARENTENA_SUBPASTA_GERAL).strip()
     try:
         indice = int(request.args.get("indice", "0"))
     except ValueError:
@@ -1691,15 +1764,16 @@ def ver_anexo_quarentena():
     try:
         imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=20)
         imap.login(EMAIL_USER, EMAIL_PASS)
-        status, _ = imap.select(QUARANTINE_FOLDER, readonly=True)
+        status, _ = imap.select(pasta, readonly=True)
         if status != "OK":
-            return jsonify({"ok": False, "error": "A pasta de Quarentena não existe"}), 404
+            return jsonify({"ok": False, "error": f"A pasta '{pasta}' não existe"}), 404
 
-        status, msg_data = imap.fetch(msg_id.encode(), "(BODY.PEEK[])")
+        status, msg_data = imap.uid("fetch", msg_id.encode(), "(BODY.PEEK[])")
         if status != "OK" or not msg_data or not msg_data[0]:
             return jsonify({"ok": False, "error": "E-mail não encontrado na Quarentena"}), 404
 
-        msg = email.message_from_bytes(msg_data[0][1])
+        conteudo = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None)
+        msg = email.message_from_bytes(conteudo)
         anexos = extrair_bytes_dos_anexos(msg)
 
         if indice < 0 or indice >= len(anexos):
