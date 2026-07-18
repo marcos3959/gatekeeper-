@@ -16,6 +16,7 @@ from html.parser import HTMLParser
 from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 import psycopg
+import cofre
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -899,6 +900,74 @@ def organize_visual():
     </body></html>
     """
     return html
+
+
+@app.route("/multi/organizar-todas", methods=["GET"])
+def organizar_todas_as_contas():
+    """
+    Roda o /organize para CADA conta cadastrada na tabela gatekeeper_contas,
+    buscando a senha protegida do cofre (Doppler + Supabase Vault) para cada
+    uma. Esse é o primeiro passo do 'motor multi-conta' (Fase B.3) — no
+    futuro, substitui a necessidade de um serviço/agendamento separado por
+    conta, permitindo que um único agendamento cuide de todas de uma vez.
+
+    Uso: /multi/organizar-todas?confirmar=sim&limite=30
+    """
+    if not DATABASE_URL:
+        return jsonify({"ok": False, "error": "DATABASE_URL não configurado"}), 500
+
+    limite_por_conta = request.args.get("limite", "30")
+    confirmar = request.args.get("confirmar", "")
+
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT email, imap_host, quarentena_geral, quarentena_institucional, sent_folder "
+                    "FROM gatekeeper_contas WHERE ativa = true ORDER BY criada_em;"
+                )
+                contas = cur.fetchall()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Falha ao listar contas cadastradas: {e}"}), 500
+
+    if not contas:
+        return jsonify({"ok": True, "contas_processadas": 0, "resultados": [], "aviso": "Nenhuma conta cadastrada ainda."})
+
+    # Guarda a configuração original (a conta fixa configurada por variável de
+    # ambiente neste serviço, se houver) para restaurar ao final — mesmo em
+    # caso de erro no meio do caminho.
+    global EMAIL_USER, EMAIL_PASS, IMAP_HOST, QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL, SENT_FOLDER
+    _originais = (EMAIL_USER, EMAIL_PASS, IMAP_HOST, QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL, SENT_FOLDER)
+
+    resultados = []
+    try:
+        for (email_conta, imap_host, q_geral, q_inst, sent_folder) in contas:
+            try:
+                senha = cofre.obter_credencial_email(DATABASE_URL, email_conta)
+            except Exception as e:
+                resultados.append({"conta": email_conta, "ok": False, "error": f"Falha ao obter credencial do cofre: {e}"})
+                continue
+
+            if not senha:
+                resultados.append({"conta": email_conta, "ok": False, "error": "Credencial não encontrada no cofre para esta conta."})
+                continue
+
+            # Troca temporariamente a configuração global para esta conta específica.
+            EMAIL_USER = email_conta
+            EMAIL_PASS = senha
+            IMAP_HOST = imap_host
+            QUARENTENA_SUBPASTA_GERAL = q_geral
+            QUARENTENA_SUBPASTA_INSTITUCIONAL = q_inst
+            SENT_FOLDER = sent_folder or SENT_FOLDER
+
+            with app.test_client() as cliente_interno:
+                resposta = cliente_interno.get(f"/organize?confirmar={confirmar}&limite={limite_por_conta}&resumo=sim")
+                dados = resposta.get_json()
+                resultados.append({"conta": email_conta, **(dados or {"ok": False, "error": "sem resposta"})})
+    finally:
+        EMAIL_USER, EMAIL_PASS, IMAP_HOST, QUARENTENA_SUBPASTA_GERAL, QUARENTENA_SUBPASTA_INSTITUCIONAL, SENT_FOLDER = _originais
+
+    return jsonify({"ok": True, "contas_processadas": len(resultados), "resultados": resultados})
 
 
 @app.route("/organize", methods=["GET"])
