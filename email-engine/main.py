@@ -325,10 +325,12 @@ def aprovar_remetentes_em_lote(lista_emails: list):
             with conn.cursor() as cur:
                 for endereco in lista_emails:
                     try:
-                        cur.execute(
-                            "INSERT INTO gatekeeper_whitelist (email) VALUES (%s) ON CONFLICT (email) DO NOTHING;",
-                            (endereco.strip().lower(),),
-                        )
+                        with conn.transaction():  # savepoint: isola o erro deste item sem abortar a conexão inteira
+                            cur.execute(
+                                "INSERT INTO gatekeeper_whitelist (email, conta_email) VALUES (%s, %s) "
+                                "ON CONFLICT (email, conta_email) DO NOTHING;",
+                                (endereco.strip().lower(), EMAIL_USER.strip().lower()),
+                            )
                         aprovados.append(endereco)
                     except Exception as e:
                         falharam.append({"email": endereco, "erro": str(e)})
@@ -349,8 +351,9 @@ def aprovar_remetente(email_addr: str):
         with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO gatekeeper_whitelist (email) VALUES (%s) ON CONFLICT (email) DO NOTHING;",
-                    (email_addr.strip().lower(),),
+                    "INSERT INTO gatekeeper_whitelist (email, conta_email) VALUES (%s, %s) "
+                    "ON CONFLICT (email, conta_email) DO NOTHING;",
+                    (email_addr.strip().lower(), EMAIL_USER.strip().lower()),
                 )
             conn.commit()
         return True, None
