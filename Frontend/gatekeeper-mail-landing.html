@@ -75,6 +75,14 @@
 
   /* GATE ILLUSTRATION */
   .gate-stage{position:relative;height:340px;}
+  .gate-link{display:block;text-decoration:none;cursor:pointer;transition:transform .25s ease;}
+  .gate-link:hover{transform:scale(1.025);}
+  .gate-hint{
+    position:absolute;left:50%;bottom:-6px;transform:translateX(-50%);
+    font-family:'IBM Plex Mono',monospace;font-size:0.72rem;letter-spacing:.06em;
+    color:var(--brass);opacity:0;transition:opacity .25s ease;white-space:nowrap;
+  }
+  .gate-link:hover .gate-hint{opacity:1;}
   .gate-frame{width:100%;height:100%;}
   .status-pill{
     position:absolute;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;
@@ -176,6 +184,7 @@
     </div>
 
     <div class="gate-stage">
+      <a class="gate-link" href="painel.html" aria-label="Entrar no painel do Gatekeeper Mail">
       <svg class="gate-frame" viewBox="0 0 360 340" xmlns="http://www.w3.org/2000/svg">
         <!-- posts -->
         <rect x="60" y="40" width="10" height="260" fill="#2A3E58"/>
@@ -206,6 +215,8 @@
         <circle cx="235" cy="310" r="9" fill="#B5583C"/>
         <rect x="228" y="322" width="14" height="10" rx="4" fill="#B5583C"/>
       </svg>
+      <span class="gate-hint">→ clique para entrar no painel</span>
+      </a>
       <span class="status-pill pill-known">Contato conhecido → entra direto</span>
       <span class="status-pill pill-unknown">Desconhecido → fica na quarentena</span>
     </div>
