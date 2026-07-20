@@ -362,6 +362,167 @@ def aprovar_remetente(email_addr: str):
         return False, str(e)
 
 
+def carregar_blacklist():
+    """Carrega o conjunto de remetentes bloqueados permanentemente (tabela gatekeeper_blacklist)."""
+    blacklist = set()
+    if not DATABASE_URL:
+        return blacklist
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT email FROM gatekeeper_blacklist WHERE conta_email = %s;",
+                    (EMAIL_USER.strip().lower(),),
+                )
+                for (e,) in cur.fetchall():
+                    blacklist.add(e.strip().lower())
+    except Exception as e:
+        print(f"Aviso: não foi possível carregar a blacklist do banco: {e}", file=sys.stderr, flush=True)
+    return blacklist
+
+
+def remover_e_bloquear_remetente(email_addr: str):
+    """
+    Ação discricionária e definitiva do usuário: remove o remetente da Lista Branca
+    (se estiver lá) e o adiciona à Lista Negra (gatekeeper_blacklist). A partir daí,
+    e-mails desse remetente são apagados direto na origem em /organize, antes mesmo
+    da checagem institucional — nunca mais passam pela Quarentena para revisão.
+    """
+    if not DATABASE_URL:
+        return False, "DATABASE_URL não configurado"
+    email_norm = email_addr.strip().lower()
+    conta_norm = EMAIL_USER.strip().lower()
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM gatekeeper_whitelist WHERE email = %s AND conta_email = %s;",
+                    (email_norm, conta_norm),
+                )
+                cur.execute(
+                    "INSERT INTO gatekeeper_blacklist (email, conta_email) VALUES (%s, %s) "
+                    "ON CONFLICT (email, conta_email) DO NOTHING;",
+                    (email_norm, conta_norm),
+                )
+            conn.commit()
+        return True, None
+    except Exception as e:
+        print(f"Erro ao remover/bloquear remetente: {e}", file=sys.stderr, flush=True)
+        return False, str(e)
+
+
+def carregar_blacklist_nomes():
+    """Carrega o conjunto de nomes de exibição bloqueados (tabela gatekeeper_blacklist_nomes)."""
+    nomes = set()
+    if not DATABASE_URL:
+        return nomes
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT nome FROM gatekeeper_blacklist_nomes WHERE conta_email = %s;",
+                    (EMAIL_USER.strip().lower(),),
+                )
+                for (n,) in cur.fetchall():
+                    nomes.add(n.strip().lower())
+    except Exception as e:
+        print(f"Aviso: não foi possível carregar a blacklist de nomes: {e}", file=sys.stderr, flush=True)
+    return nomes
+
+
+def bloquear_nome_remetente(nome: str):
+    """
+    Bloqueia um NOME DE EXIBIÇÃO (não o e-mail) permanentemente. Útil quando um
+    golpista varia o endereço de e-mail mas mantém o mesmo nome ('Suporte Banco X'),
+    ou quando o mesmo nome aparece em múltiplos domínios forjados diferentes.
+    """
+    if not DATABASE_URL:
+        return False, "DATABASE_URL não configurado"
+    nome_norm = nome.strip().lower()
+    if not nome_norm:
+        return False, "Nome vazio"
+    conta_norm = EMAIL_USER.strip().lower()
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO gatekeeper_blacklist_nomes (nome, conta_email) VALUES (%s, %s) "
+                    "ON CONFLICT (nome, conta_email) DO NOTHING;",
+                    (nome_norm, conta_norm),
+                )
+            conn.commit()
+        return True, None
+    except Exception as e:
+        print(f"Erro ao bloquear nome de remetente: {e}", file=sys.stderr, flush=True)
+        return False, str(e)
+
+
+@app.route("/whitelist/remover-e-bloquear", methods=["GET"])
+def whitelist_remover_e_bloquear():
+    """
+    Ação discricionária do usuário: remove um remetente da Lista Branca e o bloqueia
+    permanentemente (Lista Negra). Diferente da Quarentena (que é reversível e aguarda
+    revisão), esta é uma decisão definitiva — e-mails futuros desse remetente são
+    apagados direto na origem em /organize, sem passar por revisão nenhuma.
+
+    Por segurança, roda em modo SIMULAÇÃO por padrão. Use ?confirmar=sim para executar.
+    """
+    email_addr = (request.args.get("email") or "").strip().lower()
+    if not email_addr:
+        return jsonify({"ok": False, "error": "Parâmetro 'email' é obrigatório"}), 400
+
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+    if not modo_real:
+        return jsonify({
+            "ok": True,
+            "modo": "SIMULAÇÃO — nada foi alterado",
+            "seria_removido_da_lista_branca": email_addr,
+            "seria_bloqueado_permanentemente": email_addr,
+        })
+
+    sucesso, erro = remover_e_bloquear_remetente(email_addr)
+    if not sucesso:
+        return jsonify({"ok": False, "error": erro}), 500
+
+    return jsonify({
+        "ok": True,
+        "modo": "REAL — removido e bloqueado de verdade",
+        "email": email_addr,
+        "aviso": "Este remetente não entra mais na Caixa de Entrada nem na Quarentena — e-mails dele serão apagados direto no próximo /organize.",
+    })
+
+
+@app.route("/whitelist/bloquear-nome", methods=["GET"])
+def whitelist_bloquear_nome():
+    """
+    Bloqueia um NOME DE EXIBIÇÃO (ex.: 'Suporte Banco X'), não um e-mail específico.
+    Útil contra golpistas que trocam o endereço mas mantêm o mesmo nome forjado.
+    Por segurança, roda em modo SIMULAÇÃO por padrão. Use ?confirmar=sim para executar.
+    """
+    nome = (request.args.get("nome") or "").strip()
+    if not nome:
+        return jsonify({"ok": False, "error": "Parâmetro 'nome' é obrigatório"}), 400
+
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+    if not modo_real:
+        return jsonify({
+            "ok": True,
+            "modo": "SIMULAÇÃO — nada foi alterado",
+            "seria_bloqueado_permanentemente": nome,
+        })
+
+    sucesso, erro = bloquear_nome_remetente(nome)
+    if not sucesso:
+        return jsonify({"ok": False, "error": erro}), 500
+
+    return jsonify({
+        "ok": True,
+        "modo": "REAL — nome bloqueado de verdade",
+        "nome": nome,
+        "aviso": "Qualquer e-mail com este nome de exibição será apagado direto no próximo /organize, não importa o endereço usado.",
+    })
+
+
 def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: str):
     """
     Guarda a 'identidade' (Message-ID) de um e-mail no momento em que ele é
@@ -1000,8 +1161,8 @@ def organize():
     except ValueError:
         limite_lote = 0
     whitelist = carregar_whitelist()
-
-    chave_uid = f"ultimo_uid_processado:{EMAIL_USER}"
+    blacklist = carregar_blacklist()
+    blacklist_nomes = carregar_blacklist_nomes()
     chave_uidvalidity = f"uidvalidity:{EMAIL_USER}"
 
     imap = None
@@ -1084,6 +1245,7 @@ def organize():
 
         mantidos = []
         quarentena = []
+        bloqueados = []
         falhas = []
         alertas_falsificacao = []
         maior_uid_visto = int(ultimo_uid_salvo) if (usar_incremental and ultimo_uid_salvo) else 0
@@ -1101,8 +1263,9 @@ def organize():
                 parsed = email.message_from_string(raw_header)
 
                 from_header = parsed.get("From", "")
-                _, endereco = email.utils.parseaddr(from_header)
+                nome_exibicao, endereco = email.utils.parseaddr(from_header)
                 endereco = endereco.lower()
+                nome_exibicao_norm = decode_str(nome_exibicao).strip().lower()
                 if not endereco:
                     # Resposta do servidor não trouxe conteúdo utilizável para
                     # este e-mail (formato incomum/malformado) — pula, em vez
@@ -1111,7 +1274,18 @@ def organize():
                 assunto = decode_str(parsed.get("Subject"))
                 message_id = (parsed.get("Message-ID") or "").strip()
 
-                info = {"de": endereco, "assunto": assunto}
+                info = {"de": endereco, "nome": decode_str(nome_exibicao).strip(), "assunto": assunto}
+
+                # Bloqueio definitivo (decisão discricionária do usuário) vem ANTES de
+                # qualquer outra checagem — inclusive da institucional. Um remetente
+                # bloqueado (por e-mail OU por nome de exibição) é apagado direto na
+                # origem, nunca passa por Quarentena.
+                if endereco in blacklist or (nome_exibicao_norm and nome_exibicao_norm in blacklist_nomes):
+                    info["alerta"] = "REMETENTE BLOQUEADO PERMANENTEMENTE — apagado direto, sem quarentena"
+                    bloqueados.append(info)
+                    if modo_real:
+                        imap.uid("store", uid, "+FLAGS", "\\Deleted")
+                    continue
 
                 # Camada extra: se o remetente usa um domínio institucional protegido
                 # (governo, judiciário, Correios etc.), a autenticidade técnica manda
@@ -1216,6 +1390,7 @@ def organize():
                 "mensagens_analisadas_nesta_execucao": len(uids),
                 "total_mantidos": len(mantidos),
                 "total_quarentena": len(quarentena),
+                "total_bloqueados": len(bloqueados),
                 "total_alertas_institucionais": len(alertas_falsificacao),
                 "total_aprovados_por_movimento": len(aprovados_por_movimento),
                 "total_falhas": len(falhas),
@@ -1233,6 +1408,7 @@ def organize():
             "lista_branca_atual": sorted(whitelist),
             "mantidos_na_caixa_de_entrada": mantidos,
             "movidos_para_quarentena": quarentena,
+            "bloqueados_permanentemente": bloqueados,
         }
         if lote_parcial:
             resposta["lote_parcial"] = True
@@ -1279,7 +1455,7 @@ def _listar_pasta_quarentena(imap, pasta: str, categoria: str) -> list:
             raw_header = conteudo.decode("utf-8", errors="replace")
             parsed = email.message_from_string(raw_header)
             from_header = parsed.get("From", "")
-            _, endereco = email.utils.parseaddr(from_header)
+            nome_exibicao, endereco = email.utils.parseaddr(from_header)
             if not endereco:
                 continue
             mensagens.append({
@@ -1287,6 +1463,7 @@ def _listar_pasta_quarentena(imap, pasta: str, categoria: str) -> list:
                 "pasta": pasta,
                 "categoria": categoria,
                 "de": endereco.lower(),
+                "nome": decode_str(nome_exibicao).strip(),
                 "assunto": decode_str(parsed.get("Subject")),
                 "data": parsed.get("Date"),
             })
