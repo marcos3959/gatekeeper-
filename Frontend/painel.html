@@ -321,10 +321,11 @@
     }
     const mantidos = data.mantidos_na_caixa_de_entrada || [];
     const movidos = data.movidos_para_quarentena || [];
+    const bloqueados = data.bloqueados_permanentemente || [];
     const pillModo = data.modo && data.modo.startsWith('REAL') ? 'pill-alert' : 'pill-brass';
     let html = '<div class="result-box">';
     html += '<h3>Resultado <span class="pill ' + pillModo + '" style="margin-left:8px;">' + (data.modo || '') + '</span></h3>';
-    html += '<p style="font-size:0.85rem;color:var(--bone-dim);">Analisadas nesta execução: ' + (data.mensagens_analisadas_nesta_execucao ?? '—') + ' · Restam: ' + (data.restam_para_processar ?? '—') + '</p>';
+    html += '<p style="font-size:0.85rem;color:var(--bone-dim);">Analisadas nesta execução: ' + (data.mensagens_analisadas_nesta_execucao ?? '—') + ' · Restam: ' + (data.restam_para_processar ?? '—') + (bloqueados.length ? ' · Bloqueados permanentemente: ' + bloqueados.length : '') + '</p>';
     html += '<table><thead><tr><th>Mantidos na entrada (' + mantidos.length + ')</th><th>Movidos p/ quarentena (' + movidos.length + ')</th></tr></thead><tbody>';
     const max = Math.max(mantidos.length, movidos.length);
     for (let i=0; i<Math.min(max, 50); i++){
@@ -369,13 +370,32 @@
     }
     ultimasSugestoes = data.sugestoes || [];
     let html = '<div class="result-box"><h3>' + data.total_de_destinatarios_unicos + ' destinatários únicos (de ' + data.total_de_enviados_analisados + ' enviados analisados)</h3>';
-    html += '<table><thead><tr><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th></tr></thead><tbody>';
-    ultimasSugestoes.forEach(s=>{
+    html += '<table><thead><tr><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
+    ultimasSugestoes.forEach((s, i)=>{
       const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
-      html += '<tr><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td></tr>';
+      const acao = s.ja_esta_na_lista_branca ? '<button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button>' : '';
+      html += '<tr><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
     });
     html += '</tbody></table></div>';
     $('sugestoesResultado').innerHTML = html;
+
+    document.querySelectorAll('[data-remover]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const s = ultimasSugestoes[btn.dataset.remover];
+        if (!confirm('Remover "' + s.email + '" da Lista Branca e BLOQUEAR permanentemente?\n\nA partir de agora, e-mails desse remetente serão apagados direto, sem passar por Quarentena. Essa ação não move mais nada para revisão — é definitiva.')) return;
+        setLoading(btn, true);
+        try{
+          const dados = await chamar('/whitelist/remover-e-bloquear', { email: s.email, confirmar: 'sim' });
+          if (dados.ok){
+            toast('Remetente removido e bloqueado permanentemente.');
+            btn.closest('tr').remove();
+          } else {
+            toast('Erro: ' + dados.error, true);
+          }
+        }catch(e){ toast('Erro: ' + e.message, true); }
+        setLoading(btn, false, 'Remover e excluir');
+      });
+    });
   }
 
   function renderAprovacao(data){
