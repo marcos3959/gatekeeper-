@@ -523,6 +523,84 @@ def whitelist_bloquear_nome():
     })
 
 
+def carregar_blacklist_dominios():
+    """Carrega o conjunto de domínios bloqueados INTEIROS (tabela gatekeeper_blacklist_dominios)."""
+    dominios = set()
+    if not DATABASE_URL:
+        return dominios
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT dominio FROM gatekeeper_blacklist_dominios WHERE conta_email = %s;",
+                    (EMAIL_USER.strip().lower(),),
+                )
+                for (d,) in cur.fetchall():
+                    dominios.add(d.strip().lower())
+    except Exception as e:
+        print(f"Aviso: não foi possível carregar a blacklist de domínios: {e}", file=sys.stderr, flush=True)
+    return dominios
+
+
+def bloquear_dominio_remetente(dominio: str):
+    """
+    Bloqueia um DOMÍNIO INTEIRO (a 'raiz', ex.: 'empresa-chata.com.br') permanentemente.
+    Diferente do bloqueio por e-mail (só aquele endereço específico), isso derruba
+    TODOS os remetentes daquele domínio de uma vez — use com cautela, já que também
+    bloqueia endereços legítimos do mesmo domínio que você ainda não conhece.
+    """
+    if not DATABASE_URL:
+        return False, "DATABASE_URL não configurado"
+    dominio_norm = dominio.strip().lower().lstrip("@")
+    if not dominio_norm or "." not in dominio_norm:
+        return False, "Domínio inválido"
+    conta_norm = EMAIL_USER.strip().lower()
+    try:
+        with psycopg.connect(DATABASE_URL, connect_timeout=10) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO gatekeeper_blacklist_dominios (dominio, conta_email) VALUES (%s, %s) "
+                    "ON CONFLICT (dominio, conta_email) DO NOTHING;",
+                    (dominio_norm, conta_norm),
+                )
+            conn.commit()
+        return True, None
+    except Exception as e:
+        print(f"Erro ao bloquear domínio: {e}", file=sys.stderr, flush=True)
+        return False, str(e)
+
+
+@app.route("/whitelist/bloquear-dominio", methods=["GET"])
+def whitelist_bloquear_dominio():
+    """
+    Bloqueia um DOMÍNIO INTEIRO (ex.: 'empresa-chata.com.br'), derrubando todos os
+    remetentes desse domínio de uma vez — inclusive endereços ainda desconhecidos.
+    Por segurança, roda em modo SIMULAÇÃO por padrão. Use ?confirmar=sim para executar.
+    """
+    dominio = (request.args.get("dominio") or "").strip()
+    if not dominio:
+        return jsonify({"ok": False, "error": "Parâmetro 'dominio' é obrigatório"}), 400
+
+    modo_real = request.args.get("confirmar", "").lower() == "sim"
+    if not modo_real:
+        return jsonify({
+            "ok": True,
+            "modo": "SIMULAÇÃO — nada foi alterado",
+            "seria_bloqueado_permanentemente": dominio,
+        })
+
+    sucesso, erro = bloquear_dominio_remetente(dominio)
+    if not sucesso:
+        return jsonify({"ok": False, "error": erro}), 500
+
+    return jsonify({
+        "ok": True,
+        "modo": "REAL — domínio bloqueado de verdade",
+        "dominio": dominio,
+        "aviso": "Qualquer e-mail de qualquer endereço deste domínio será apagado direto no próximo /organize.",
+    })
+
+
 def registrar_envio_para_quarentena(message_id: str, remetente: str, assunto: str):
     """
     Guarda a 'identidade' (Message-ID) de um e-mail no momento em que ele é
@@ -1163,6 +1241,7 @@ def organize():
     whitelist = carregar_whitelist()
     blacklist = carregar_blacklist()
     blacklist_nomes = carregar_blacklist_nomes()
+    blacklist_dominios = carregar_blacklist_dominios()
     chave_uidvalidity = f"uidvalidity:{EMAIL_USER}"
 
     imap = None
@@ -1280,7 +1359,7 @@ def organize():
                 # qualquer outra checagem — inclusive da institucional. Um remetente
                 # bloqueado (por e-mail OU por nome de exibição) é apagado direto na
                 # origem, nunca passa por Quarentena.
-                if endereco in blacklist or (nome_exibicao_norm and nome_exibicao_norm in blacklist_nomes):
+                if endereco in blacklist or (nome_exibicao_norm and nome_exibicao_norm in blacklist_nomes) or dominio_do_email(endereco) in blacklist_dominios:
                     info["alerta"] = "REMETENTE BLOQUEADO PERMANENTEMENTE — apagado direto, sem quarentena"
                     bloqueados.append(info)
                     if modo_real:
@@ -2084,6 +2163,7 @@ def sugestoes():
         ids_recentes = todos_ids[-limite:] if len(todos_ids) > limite else todos_ids
 
         contagem = {}
+        nomes = {}
         for msg_id in ids_recentes:
             status, msg_data = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (TO)])")
             if status != "OK" or not msg_data or not msg_data[0]:
@@ -2091,16 +2171,20 @@ def sugestoes():
             raw_header = msg_data[0][1].decode("utf-8", errors="replace")
             parsed = email.message_from_string(raw_header)
             destinatarios = email.utils.getaddresses([parsed.get("To", "")])
-            for _, endereco in destinatarios:
+            for nome_bruto, endereco in destinatarios:
                 endereco = endereco.strip().lower()
                 if endereco:
                     contagem[endereco] = contagem.get(endereco, 0) + 1
+                    nome_decodificado = decode_str(nome_bruto).strip()
+                    if nome_decodificado:
+                        nomes[endereco] = nome_decodificado  # guarda a ocorrência mais recente
 
         whitelist_atual = carregar_whitelist()
 
         sugestoes_lista = [
             {
                 "email": endereco,
+                "nome": nomes.get(endereco, ""),
                 "vezes_que_voce_escreveu": qtd,
                 "ja_esta_na_lista_branca": endereco in whitelist_atual,
             }
