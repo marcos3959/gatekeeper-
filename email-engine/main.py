@@ -728,6 +728,106 @@ def detectar_aprovacoes_por_movimento(imap, limite_pendentes: int = 15) -> list:
     return aprovados_agora
 
 
+def detectar_aprovacoes_por_envio(imap, limite: int = 200) -> list:
+    """
+    Aprovação automática por INTERAÇÃO: se você escreveu para alguém (mesmo que
+    ele nunca tenha te escrito de volta), esse alguém é aprovado sozinho na
+    Lista Branca — sem precisar do passo manual de "Buscar sugestões" e
+    "Aprovar". Esse é o comportamento original pretendido pela curadoria
+    assistida: o histórico de Enviados É a evidência de confiança.
+
+    Roda de forma incremental (como o /organize faz com a Caixa de Entrada):
+    lembra até qual UID da pasta de Enviados já processou, e só olha o que é
+    novo desde a última execução — assim não reprocessa o histórico inteiro
+    a cada chamada.
+
+    Respeita bloqueios: um endereço, nome ou domínio que você bloqueou
+    deliberadamente NÃO é reaprovado automaticamente só porque você escreveu
+    para ele (ex.: resposta única a alguém que você já baniu antes).
+
+    PRÉ-REQUISITO: só roda em modo_real (quem chama decide isso) — nunca deve
+    ter efeito colateral (gravar no banco/avançar ponteiro) durante simulação.
+    """
+    if not DATABASE_URL:
+        return []
+
+    chave_uid = f"ultimo_uid_processado_enviados:{EMAIL_USER}"
+    chave_uidvalidity = f"uidvalidity_enviados:{EMAIL_USER}"
+
+    status, _ = imap.select(SENT_FOLDER, readonly=True)
+    if status != "OK":
+        return []
+
+    uidvalidity_atual = None
+    status_val, dat_val = imap.status(SENT_FOLDER, "(UIDVALIDITY)")
+    if status_val == "OK" and dat_val and dat_val[0]:
+        m = re.search(rb"UIDVALIDITY (\d+)", dat_val[0])
+        if m:
+            uidvalidity_atual = m.group(1).decode()
+
+    ultimo_uid_salvo = obter_estado(chave_uid)
+    uidvalidity_salva = obter_estado(chave_uidvalidity)
+
+    usar_incremental = (
+        ultimo_uid_salvo is not None
+        and uidvalidity_atual is not None
+        and uidvalidity_salva == uidvalidity_atual
+    )
+
+    criterio_busca = f"UID {int(ultimo_uid_salvo) + 1}:*" if usar_incremental else "ALL"
+    status, data = imap.uid("search", None, criterio_busca)
+    uids = data[0].split() if status == "OK" else []
+    if usar_incremental and ultimo_uid_salvo:
+        limite_uid = int(ultimo_uid_salvo)
+        uids = [u for u in uids if int(u) > limite_uid]
+
+    if not usar_incremental and len(uids) > limite:
+        # Primeira execução (sem ponteiro salvo ainda): evita processar um
+        # histórico gigante de uma vez só; pega só os mais recentes agora,
+        # o restante fica coberto pelas próximas execuções incrementais.
+        uids = uids[-limite:]
+
+    if not uids:
+        return []
+
+    whitelist_atual = carregar_whitelist()
+    blacklist_atual = carregar_blacklist()
+    blacklist_dominios_atual = carregar_blacklist_dominios()
+
+    aprovados_agora = []
+    maior_uid_visto = int(ultimo_uid_salvo) if (usar_incremental and ultimo_uid_salvo) else 0
+
+    for uid in uids:
+        maior_uid_visto = max(maior_uid_visto, int(uid))
+        try:
+            status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[HEADER.FIELDS (TO)])")
+            if status != "OK" or not msg_data or not msg_data[0]:
+                continue
+            raw_header = _bytes_seguro(msg_data[0][1] if isinstance(msg_data[0], (tuple, list)) and len(msg_data[0]) >= 2 else None).decode("utf-8", errors="replace")
+            parsed = email.message_from_string(raw_header)
+            destinatarios = email.utils.getaddresses([parsed.get("To", "")])
+            for _, endereco in destinatarios:
+                endereco = endereco.strip().lower()
+                if not endereco or endereco in whitelist_atual:
+                    continue
+                if endereco in blacklist_atual or dominio_do_email(endereco) in blacklist_dominios_atual:
+                    continue  # respeita bloqueio deliberado — não reaprova sozinho
+                ok, _ = aprovar_remetente(endereco)
+                if ok:
+                    whitelist_atual.add(endereco)  # evita aprovar/reportar duplicado no mesmo lote
+                    aprovados_agora.append({"email": endereco, "motivo": "você escreveu para este endereço"})
+        except Exception as e:
+            print(f"Aviso: pulando mensagem enviada (uid={uid}) por erro: {e}", file=sys.stderr, flush=True)
+            continue
+
+    if maior_uid_visto > 0:
+        salvar_estado(chave_uid, str(maior_uid_visto))
+        if uidvalidity_atual is not None:
+            salvar_estado(chave_uidvalidity, uidvalidity_atual)
+
+    return aprovados_agora
+
+
 def decode_str(value):
     """Decodifica cabeçalhos de e-mail que podem vir com acentuação especial."""
     if value is None:
@@ -1276,8 +1376,11 @@ def organize():
         imap.select("INBOX", readonly=not modo_real)
 
         aprovados_por_movimento = []
+        aprovados_por_envio = []
         if modo_real:
             aprovados_por_movimento = detectar_aprovacoes_por_movimento(imap)
+            aprovados_por_envio = detectar_aprovacoes_por_envio(imap)
+            imap.select("INBOX", readonly=not modo_real)  # a função acima troca de pasta; volta para a INBOX
             whitelist = carregar_whitelist()  # recarrega, caso alguma aprovação nova tenha entrado agora
 
         # Descobre o UIDVALIDITY atual (um "número de versão" da caixa — se
@@ -1472,6 +1575,7 @@ def organize():
                 "total_bloqueados": len(bloqueados),
                 "total_alertas_institucionais": len(alertas_falsificacao),
                 "total_aprovados_por_movimento": len(aprovados_por_movimento),
+                "total_aprovados_por_envio": len(aprovados_por_envio),
                 "total_falhas": len(falhas),
             }
             if lote_parcial:
@@ -1497,6 +1601,8 @@ def organize():
             resposta["alertas_de_possivel_falsificacao_institucional"] = alertas_falsificacao
         if aprovados_por_movimento:
             resposta["aprovados_por_movimento"] = aprovados_por_movimento
+        if aprovados_por_envio:
+            resposta["aprovados_por_envio"] = aprovados_por_envio
         if falhas:
             resposta["falhas_nao_apagadas_por_seguranca"] = falhas
         return jsonify(resposta)
