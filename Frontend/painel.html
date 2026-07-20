@@ -464,17 +464,135 @@
       $('quarentenaResultado').innerHTML = '<div class="empty">Quarentena vazia no momento.</div>';
       return;
     }
+
     let html = '<div class="result-box"><h3>' + data.total + ' mensagem(ns)</h3>';
-    html += '<table><thead><tr><th>De</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
+    html += '<div id="qBarraSelecao" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
+    html += '<label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="qSelTodos"> selecionar todos</label>';
+    html += '<span id="qSelContagem" style="font-size:0.78rem;color:var(--bone-dim);">0 selecionado(s)</span>';
+    html += '<button class="btn btn-danger btn-sm" id="qBtnApagarSel" disabled>Apagar selecionados</button>';
+    html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearEmailsSel" disabled>Bloquear e-mail(s) selecionados</button>';
+    html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearNomesSel" disabled>Bloquear nome(s) selecionados</button>';
+    html += '</div>';
+
+    html += '<table><thead><tr><th style="width:30px;"></th><th>De</th><th>Nome de exibição</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
     msgs.forEach((m, i) => {
-      html += '<tr id="qrow-' + i + '"><td>' + esc(m.de || '') + '</td><td>' + esc(m.assunto || '') + '</td>' +
+      const nome = m.nome || '';
+      html += '<tr id="qrow-' + i + '">' +
+        '<td><input type="checkbox" class="qchk" data-idx="' + i + '"></td>' +
+        '<td><span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-selemail="' + i + '" title="Selecionar todos com este e-mail">' + esc(m.de || '') + '</span></td>' +
+        '<td>' + (nome ? '<span style="cursor:pointer;text-decoration:underline dotted;" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>' : '<span style="color:var(--bone-dim);">—</span>') + '</td>' +
+        '<td>' + esc(m.assunto || '') + '</td>' +
         '<td><span class="pill ' + (m.categoria === 'institucional' ? 'pill-alert' : 'pill-brass') + '">' + esc(m.categoria || '') + '</span></td>' +
         '<td><button class="btn btn-ghost btn-sm" data-ver="' + i + '">Ver</button> ' +
-        '<button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button></td></tr>' +
-        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="4"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
+        '<button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button> ' +
+        '<button class="btn btn-danger btn-sm" data-bloquear="' + i + '">Bloquear remetente</button></td></tr>' +
+        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="6"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
     });
     html += '</tbody></table></div>';
     $('quarentenaResultado').innerHTML = html;
+
+    function linhasSelecionadas(){
+      return Array.from(document.querySelectorAll('.qchk:checked')).map(c => parseInt(c.dataset.idx));
+    }
+
+    function atualizarBarraSelecao(){
+      const n = linhasSelecionadas().length;
+      $('qSelContagem').textContent = n + ' selecionado(s)';
+      $('qBtnApagarSel').disabled = n === 0;
+      $('qBtnBloquearEmailsSel').disabled = n === 0;
+      $('qBtnBloquearNomesSel').disabled = n === 0;
+    }
+
+    document.querySelectorAll('.qchk').forEach(chk=>{
+      chk.addEventListener('change', atualizarBarraSelecao);
+    });
+
+    $('qSelTodos').addEventListener('change', (e)=>{
+      document.querySelectorAll('.qchk').forEach(chk=>{ chk.checked = e.target.checked; });
+      atualizarBarraSelecao();
+    });
+
+    document.querySelectorAll('[data-selemail]').forEach(span=>{
+      span.addEventListener('click', ()=>{
+        const email = msgs[span.dataset.selemail].de;
+        document.querySelectorAll('.qchk').forEach(chk=>{
+          if (msgs[chk.dataset.idx].de === email) chk.checked = true;
+        });
+        atualizarBarraSelecao();
+      });
+    });
+
+    document.querySelectorAll('[data-selnome]').forEach(span=>{
+      span.addEventListener('click', ()=>{
+        const nome = msgs[span.dataset.selnome].nome;
+        document.querySelectorAll('.qchk').forEach(chk=>{
+          if (msgs[chk.dataset.idx].nome === nome) chk.checked = true;
+        });
+        atualizarBarraSelecao();
+      });
+    });
+
+    function removerLinhas(indices){
+      indices.forEach(i=>{
+        const row = document.getElementById('qrow-' + i);
+        if (row) row.remove();
+        const bodyRow = document.getElementById('qbody-' + i);
+        if (bodyRow) bodyRow.remove();
+      });
+      atualizarBarraSelecao();
+    }
+
+    $('qBtnApagarSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      if (!confirm('Apagar permanentemente ' + indices.length + ' e-mail(s) selecionado(s)?')) return;
+      const btn = $('qBtnApagarSel');
+      setLoading(btn, true);
+      let sucesso = 0, falha = 0;
+      for (const i of indices){
+        const m = msgs[i];
+        try{
+          const dados = await chamar('/quarentena/apagar', { id: m.id, pasta: m.pasta, confirmar: 'sim' });
+          if (dados.ok) sucesso++; else falha++;
+        }catch(e){ falha++; }
+      }
+      toast(sucesso + ' apagado(s)' + (falha ? ', ' + falha + ' falharam' : '') + '.', falha > 0);
+      removerLinhas(indices);
+      setLoading(btn, false, 'Apagar selecionados');
+    });
+
+    $('qBtnBloquearEmailsSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      const emailsUnicos = [...new Set(indices.map(i => msgs[i].de))];
+      if (!confirm('Bloquear permanentemente ' + emailsUnicos.length + ' e-mail(s) — todas as mensagens desses remetentes (atuais e futuras) serão apagadas direto, sem passar por Quarentena. Ação definitiva. Confirma?')) return;
+      const btn = $('qBtnBloquearEmailsSel');
+      setLoading(btn, true);
+      for (const em of emailsUnicos){
+        try{ await chamar('/whitelist/remover-e-bloquear', { email: em, confirmar: 'sim' }); }catch(e){}
+      }
+      toast(emailsUnicos.length + ' e-mail(s) bloqueado(s) permanentemente.');
+      const paraRemover = msgs.map((m,i)=>i).filter(i => emailsUnicos.includes(msgs[i].de));
+      removerLinhas(paraRemover);
+      setLoading(btn, false, 'Bloquear e-mail(s) selecionados');
+    });
+
+    $('qBtnBloquearNomesSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      const nomesUnicos = [...new Set(indices.map(i => msgs[i].nome).filter(n => n))];
+      if (!nomesUnicos.length){ toast('Nenhum e-mail selecionado tem nome de exibição para bloquear.', true); return; }
+      if (!confirm('Bloquear permanentemente ' + nomesUnicos.length + ' nome(s) de exibição — qualquer e-mail futuro com esse nome será apagado direto, não importa o endereço usado. Ação definitiva. Confirma?')) return;
+      const btn = $('qBtnBloquearNomesSel');
+      setLoading(btn, true);
+      for (const nm of nomesUnicos){
+        try{ await chamar('/whitelist/bloquear-nome', { nome: nm, confirmar: 'sim' }); }catch(e){}
+      }
+      toast(nomesUnicos.length + ' nome(s) bloqueado(s) permanentemente.');
+      const paraRemover = msgs.map((m,i)=>i).filter(i => nomesUnicos.includes(msgs[i].nome));
+      removerLinhas(paraRemover);
+      setLoading(btn, false, 'Bloquear nome(s) selecionados');
+    });
 
     document.querySelectorAll('[data-ver]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
@@ -507,13 +625,31 @@
           const dados = await chamar('/quarentena/apagar', { id: m.id, pasta: m.pasta, confirmar: 'sim' });
           if (dados.ok){
             toast('E-mail apagado.');
-            document.getElementById('qrow-' + i).remove();
-            const bodyRow = document.getElementById('qbody-' + i); if (bodyRow) bodyRow.remove();
+            removerLinhas([parseInt(i)]);
           } else {
             toast('Erro: ' + dados.error, true);
           }
         }catch(e){ toast('Erro: ' + e.message, true); }
         setLoading(btn, false, 'Apagar');
+      });
+    });
+
+    document.querySelectorAll('[data-bloquear]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const i = btn.dataset.bloquear;
+        const m = msgs[i];
+        if (!confirm('Bloquear "' + m.de + '" permanentemente?\n\nEste e-mail (e todos os futuros desse remetente) serão apagados direto na origem — não passam mais nem por Quarentena. Ação definitiva.')) return;
+        setLoading(btn, true);
+        try{
+          const dados = await chamar('/whitelist/remover-e-bloquear', { email: m.de, confirmar: 'sim' });
+          if (dados.ok){
+            toast('Remetente bloqueado permanentemente.');
+            removerLinhas([parseInt(i)]);
+          } else {
+            toast('Erro: ' + dados.error, true);
+          }
+        }catch(e){ toast('Erro: ' + e.message, true); }
+        setLoading(btn, false, 'Bloquear remetente');
       });
     });
   }
