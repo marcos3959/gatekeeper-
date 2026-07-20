@@ -99,6 +99,7 @@
   .pill-brass{background:rgba(201,162,75,0.14);color:var(--brass);border:1px solid var(--brass);}
 
   .result-box{background:var(--navy-surface);border:1px solid var(--navy-line);padding:20px;margin-top:20px;}
+  .barra-flutuante{position:sticky;top:66px;z-index:15;box-shadow:0 8px 16px rgba(0,0,0,0.4);}
   .result-box h3{font-size:0.95rem;margin-bottom:12px;color:var(--brass);}
   .empty{color:var(--bone-dim);font-size:0.88rem;padding:20px 0;}
   .msg-body{white-space:pre-wrap;background:var(--navy-deep);border:1px solid var(--navy-line);padding:14px;margin-top:10px;font-size:0.84rem;max-height:320px;overflow-y:auto;}
@@ -167,6 +168,37 @@
       <div class="card"><div class="label">Quarentena geral</div><div class="value alert" id="valGeral">—</div></div>
     </div>
     <div id="resumoErro" class="empty" style="display:none;"></div>
+
+    <div style="position:relative;max-width:420px;margin:36px auto 0;">
+      <svg viewBox="0 0 360 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">
+        <rect x="60" y="40" width="10" height="260" fill="#2A3E58"/>
+        <rect x="290" y="40" width="10" height="260" fill="#2A3E58"/>
+        <rect x="50" y="30" width="30" height="14" fill="#2A3E58"/>
+        <rect x="280" y="30" width="30" height="14" fill="#2A3E58"/>
+        <g>
+          <rect x="80" y="60" width="90" height="220" fill="none" stroke="#5C8577" stroke-width="2"/>
+          <line x1="80" y1="80" x2="170" y2="80" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="120" x2="170" y2="120" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="160" x2="170" y2="160" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="200" x2="170" y2="200" stroke="#5C8577" stroke-width="1.4"/>
+          <line x1="80" y1="240" x2="170" y2="240" stroke="#5C8577" stroke-width="1.4"/>
+        </g>
+        <g>
+          <rect x="190" y="60" width="90" height="220" fill="none" stroke="#B5583C" stroke-width="2" opacity="0.55"/>
+          <line x1="190" y1="80" x2="280" y2="80" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="120" x2="280" y2="120" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="160" x2="280" y2="160" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="200" x2="280" y2="200" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+          <line x1="190" y1="240" x2="280" y2="240" stroke="#B5583C" stroke-width="1.4" opacity="0.55"/>
+        </g>
+        <circle cx="125" cy="30" r="9" fill="#5C8577"/>
+        <rect x="118" y="42" width="14" height="26" rx="4" fill="#5C8577"/>
+        <circle cx="235" cy="310" r="9" fill="#B5583C"/>
+        <rect x="228" y="322" width="14" height="10" rx="4" fill="#B5583C"/>
+      </svg>
+      <span style="position:absolute;top:6%;left:0;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;letter-spacing:.06em;padding:5px 10px;border-radius:20px;text-transform:uppercase;background:rgba(92,133,119,0.18);color:var(--sage);border:1px solid var(--sage);" id="portaConhecido">Caixa de entrada: —</span>
+      <span style="position:absolute;bottom:8%;right:0;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;letter-spacing:.06em;padding:5px 10px;border-radius:20px;text-transform:uppercase;background:rgba(181,88,60,0.16);color:var(--alert);border:1px solid var(--alert);" id="portaBarrado">Retidos: —</span>
+    </div>
   </section>
 
   <!-- ORGANIZAR -->
@@ -305,6 +337,9 @@
       $('valInbox').textContent = data.total_caixa_de_entrada ?? '—';
       $('valInstitucional').textContent = data.total_alerta_institucional ?? '—';
       $('valGeral').textContent = data.total_geral ?? '—';
+      const totalRetidos = (data.total_alerta_institucional ?? 0) + (data.total_geral ?? 0);
+      $('portaConhecido').textContent = 'Caixa de entrada: ' + (data.total_caixa_de_entrada ?? '—');
+      $('portaBarrado').textContent = 'Retidos: ' + totalRetidos;
       checarConexao();
     }catch(e){
       $('resumoErro').style.display = 'block';
@@ -371,7 +406,7 @@
     ultimasSugestoes = data.sugestoes || [];
 
     let html = '<div class="result-box"><h3>' + data.total_de_destinatarios_unicos + ' destinatários únicos (de ' + data.total_de_enviados_analisados + ' enviados analisados)</h3>';
-    html += '<div id="lbBarraSelecao" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
+    html += '<div id="lbBarraSelecao" class="barra-flutuante" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
     html += '<label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="lbSelTodos"> selecionar todos</label>';
     html += '<span id="lbSelContagem" style="font-size:0.78rem;color:var(--bone-dim);">0 selecionado(s)</span>';
     html += '<button class="btn btn-danger btn-sm" id="lbBtnRemoverSel" disabled>Remover e excluir selecionados</button>';
@@ -581,7 +616,7 @@
     }
 
     let html = '<div class="result-box"><h3>' + data.total + ' mensagem(ns)</h3>';
-    html += '<div id="qBarraSelecao" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
+    html += '<div id="qBarraSelecao" class="barra-flutuante" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
     html += '<label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="qSelTodos"> selecionar todos</label>';
     html += '<span id="qSelContagem" style="font-size:0.78rem;color:var(--bone-dim);">0 selecionado(s)</span>';
     html += '<button class="btn btn-danger btn-sm" id="qBtnApagarSel" disabled>Apagar selecionados</button>';
