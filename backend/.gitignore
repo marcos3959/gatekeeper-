@@ -1,0 +1,10 @@
+# Nunca subir estes arquivos para o GitHub — guardam chaves e credenciais secretas
+.env
+env
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
+
+# Ambiente virtual (recriável com pip install -r requirements.txt)
+venv/
