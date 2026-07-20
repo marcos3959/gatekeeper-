@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gatekeeper Mail — Painel de Controle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --navy-deep:#0F1B2D;
+    --navy-surface:#16273F;
+    --navy-line:#2A3E58;
+    --bone:#EDEAE1;
+    --bone-dim:#B9C0C9;
+    --brass:#C9A24B;
+    --sage:#5C8577;
+    --alert:#B5583C;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--navy-deep);
+    color:var(--bone);
+    font-family:'IBM Plex Sans', sans-serif;
+    line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3{font-family:'Source Serif 4', serif; font-weight:600; margin:0; color:var(--bone);}
+  code, .mono{font-family:'IBM Plex Mono', monospace;}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px;}
+
+  /* NAV */
+  nav.top{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--navy-line);position:sticky;top:0;background:var(--navy-deep);z-index:20;}
+  .brand{display:flex;align-items:center;gap:10px;font-family:'Source Serif 4',serif;font-size:1.1rem;font-weight:600;}
+  .status-dot{width:8px;height:8px;border-radius:50%;background:var(--bone-dim);flex-shrink:0;transition:background .3s;}
+  .status-dot.ok{background:var(--sage);box-shadow:0 0 0 3px rgba(92,133,119,0.2);}
+  .status-dot.fail{background:var(--alert);box-shadow:0 0 0 3px rgba(181,88,60,0.2);}
+  .conn{display:flex;align-items:center;gap:8px;font-size:0.8rem;color:var(--bone-dim);font-family:'IBM Plex Mono',monospace;}
+
+  .tabs{display:flex;gap:4px;padding:0 24px;border-bottom:1px solid var(--navy-line);overflow-x:auto;}
+  .tab-btn{
+    background:none;border:none;color:var(--bone-dim);font-family:'IBM Plex Sans',sans-serif;
+    font-size:0.92rem;padding:14px 18px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;
+  }
+  .tab-btn.active{color:var(--brass);border-bottom-color:var(--brass);}
+  .tab-btn:hover:not(.active){color:var(--bone);}
+
+  main{padding:36px 24px 80px;}
+  .panel{display:none;}
+  .panel.active{display:block;}
+
+  h2.panel-title{font-size:1.4rem;margin-bottom:6px;}
+  p.panel-sub{color:var(--bone-dim);font-size:0.92rem;margin:0 0 28px;max-width:60ch;}
+
+  .card-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:2px;background:var(--navy-line);margin-bottom:32px;border:1px solid var(--navy-line);}
+  .card{background:var(--navy-surface);padding:22px 20px;}
+  .card .label{font-family:'IBM Plex Mono',monospace;font-size:0.68rem;letter-spacing:.08em;text-transform:uppercase;color:var(--bone-dim);}
+  .card .value{font-family:'Source Serif 4',serif;font-size:2.1rem;margin-top:8px;color:var(--bone);}
+  .card .value.alert{color:var(--alert);}
+  .card .value.sage{color:var(--sage);}
+
+  .controls{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:24px;}
+  .field{display:flex;flex-direction:column;gap:6px;}
+  .field label{font-size:0.78rem;color:var(--bone-dim);font-family:'IBM Plex Mono',monospace;}
+  input[type=text], input[type=number], input[type=url]{
+    background:var(--navy-surface);border:1px solid var(--navy-line);color:var(--bone);
+    padding:10px 12px;border-radius:2px;font-family:'IBM Plex Mono',monospace;font-size:0.88rem;min-width:180px;
+  }
+  input:focus{outline:2px solid var(--brass);outline-offset:1px;}
+  label.check{display:flex;align-items:center;gap:8px;font-size:0.85rem;color:var(--bone-dim);padding-bottom:9px;}
+
+  .btn{
+    display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:2px;
+    font-size:0.9rem;font-weight:500;text-decoration:none;border:1px solid transparent;
+    cursor:pointer;transition:all .15s;font-family:'IBM Plex Sans',sans-serif;
+  }
+  .btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .btn-primary{background:var(--brass);color:var(--navy-deep);}
+  .btn-primary:hover:not(:disabled){background:#dcb562;}
+  .btn-danger{background:transparent;border-color:var(--alert);color:var(--alert);}
+  .btn-danger:hover:not(:disabled){background:rgba(181,88,60,0.12);}
+  .btn-ghost{border-color:var(--navy-line);color:var(--bone);background:transparent;}
+  .btn-ghost:hover:not(:disabled){border-color:var(--brass);color:var(--brass);}
+  .btn-sm{padding:6px 12px;font-size:0.78rem;}
+
+  .spinner{width:14px;height:14px;border:2px solid rgba(15,27,45,0.3);border-top-color:var(--navy-deep);border-radius:50%;animation:spin .7s linear infinite;}
+  .btn-ghost .spinner, .btn-danger .spinner{border:2px solid rgba(237,234,225,0.25);border-top-color:currentColor;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+
+  table{width:100%;border-collapse:collapse;font-size:0.86rem;}
+  th{text-align:left;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--bone-dim);padding:10px 12px;border-bottom:1px solid var(--navy-line);}
+  td{padding:10px 12px;border-bottom:1px solid var(--navy-line);vertical-align:top;}
+  tr:hover td{background:rgba(255,255,255,0.02);}
+  .pill{display:inline-block;padding:3px 9px;border-radius:20px;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;text-transform:uppercase;letter-spacing:.04em;}
+  .pill-sage{background:rgba(92,133,119,0.16);color:var(--sage);border:1px solid var(--sage);}
+  .pill-alert{background:rgba(181,88,60,0.16);color:var(--alert);border:1px solid var(--alert);}
+  .pill-brass{background:rgba(201,162,75,0.14);color:var(--brass);border:1px solid var(--brass);}
+
+  .result-box{background:var(--navy-surface);border:1px solid var(--navy-line);padding:20px;margin-top:20px;}
+  .result-box h3{font-size:0.95rem;margin-bottom:12px;color:var(--brass);}
+  .empty{color:var(--bone-dim);font-size:0.88rem;padding:20px 0;}
+  .msg-body{white-space:pre-wrap;background:var(--navy-deep);border:1px solid var(--navy-line);padding:14px;margin-top:10px;font-size:0.84rem;max-height:320px;overflow-y:auto;}
+  .warn-note{font-size:0.78rem;color:var(--alert);margin-top:8px;}
+  .toast{position:fixed;bottom:24px;right:24px;background:var(--navy-surface);border:1px solid var(--navy-line);border-left:3px solid var(--sage);padding:14px 18px;font-size:0.86rem;max-width:340px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,0.3);}
+  .toast.err{border-left-color:var(--alert);}
+
+  .settings-toggle{background:none;border:1px solid var(--navy-line);color:var(--bone-dim);border-radius:2px;padding:8px 12px;font-size:0.78rem;cursor:pointer;font-family:'IBM Plex Mono',monospace;}
+  .settings-toggle:hover{border-color:var(--brass);color:var(--brass);}
+  .settings-drawer{display:none;border-bottom:1px solid var(--navy-line);background:var(--navy-surface);padding:20px 24px;}
+  .settings-drawer.open{display:block;}
+
+  @media (max-width:640px){
+    .card-row{grid-template-columns:1fr 1fr;}
+    nav.top{flex-wrap:wrap;gap:10px;}
+  }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 26 26" fill="none">
+      <path d="M13 2L23 6.5V12.5C23 18.5 19 22.8 13 24C7 22.8 3 18.5 3 12.5V6.5L13 2Z" stroke="#C9A24B" stroke-width="1.4"/>
+      <path d="M9 13L12 16L17.5 9.5" stroke="#C9A24B" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Gatekeeper Mail — Painel
+  </div>
+  <div style="display:flex;align-items:center;gap:14px;">
+    <div class="conn"><span class="status-dot" id="connDot"></span><span id="connLabel">verificando conexão…</span></div>
+    <button class="settings-toggle" id="settingsToggle">⚙ Conexão</button>
+  </div>
+</nav>
+
+<div class="settings-drawer" id="settingsDrawer">
+  <div class="controls" style="margin-bottom:0;">
+    <div class="field">
+      <label for="baseUrlInput">URL do servidor (Render)</label>
+      <input type="url" id="baseUrlInput" style="min-width:380px;">
+    </div>
+    <button class="btn btn-ghost btn-sm" id="saveSettingsBtn">Salvar e testar</button>
+  </div>
+  <p style="font-size:0.78rem;color:var(--bone-dim);margin:12px 0 0;">Isso aponta o painel para o serviço correto no Render. Fica salvo neste navegador.</p>
+</div>
+
+<div class="tabs">
+  <button class="tab-btn active" data-tab="resumo">Resumo</button>
+  <button class="tab-btn" data-tab="organizar">Organizar</button>
+  <button class="tab-btn" data-tab="sugestoes">Lista Branca</button>
+  <button class="tab-btn" data-tab="quarentena">Quarentena</button>
+</div>
+
+<main class="wrap">
+
+  <!-- RESUMO -->
+  <section class="panel active" id="panel-resumo">
+    <h2 class="panel-title">Resumo da conta</h2>
+    <p class="panel-sub">Visão geral em tempo real — sem precisar colar link nenhum.</p>
+    <div class="controls">
+      <button class="btn btn-primary" id="btnAtualizarResumo">Atualizar</button>
+    </div>
+    <div class="card-row" id="cardsResumo">
+      <div class="card"><div class="label">Conta protegida</div><div class="value" id="valConta">—</div></div>
+      <div class="card"><div class="label">Caixa de entrada</div><div class="value" id="valInbox">—</div></div>
+      <div class="card"><div class="label">Alerta institucional</div><div class="value alert" id="valInstitucional">—</div></div>
+      <div class="card"><div class="label">Quarentena geral</div><div class="value alert" id="valGeral">—</div></div>
+    </div>
+    <div id="resumoErro" class="empty" style="display:none;"></div>
+  </section>
+
+  <!-- ORGANIZAR -->
+  <section class="panel" id="panel-organizar">
+    <h2 class="panel-title">Organizar caixa de entrada</h2>
+    <p class="panel-sub">Move remetentes desconhecidos para a Quarentena e mantém quem já está na Lista Branca. Sempre simule antes de rodar de verdade.</p>
+    <div class="controls">
+      <div class="field">
+        <label for="orgLimite">Limite por execução</label>
+        <input type="number" id="orgLimite" value="500" min="1">
+      </div>
+      <label class="check"><input type="checkbox" id="orgReprocessar"> reprocessar tudo (varredura completa)</label>
+      <button class="btn btn-ghost" id="btnOrganizarSimular">Simular</button>
+      <button class="btn btn-danger" id="btnOrganizarReal">Rodar de verdade</button>
+    </div>
+    <div id="organizarResultado"></div>
+  </section>
+
+  <!-- LISTA BRANCA / SUGESTÕES -->
+  <section class="panel" id="panel-sugestoes">
+    <h2 class="panel-title">Lista Branca — sugestões e aprovação</h2>
+    <p class="panel-sub">Sugere quem aprovar com base em pra quem você já escreveu, e aprova em lote.</p>
+    <div class="controls">
+      <div class="field">
+        <label for="sugLimite">Analisar últimos enviados</label>
+        <input type="number" id="sugLimite" value="300" min="1">
+      </div>
+      <button class="btn btn-ghost" id="btnBuscarSugestoes">Buscar sugestões</button>
+      <button class="btn btn-primary" id="btnAprovarSimular">Simular aprovação total</button>
+      <button class="btn btn-danger" id="btnAprovarReal">Aprovar todos de verdade</button>
+    </div>
+    <div id="sugestoesResultado"></div>
+  </section>
+
+  <!-- QUARENTENA -->
+  <section class="panel" id="panel-quarentena">
+    <h2 class="panel-title">Quarentena</h2>
+    <p class="panel-sub">O que está retido, aguardando sua decisão. Nada aqui é executado automaticamente.</p>
+    <div class="controls">
+      <button class="btn btn-ghost" id="btnAtualizarQuarentena">Atualizar lista</button>
+    </div>
+    <div id="quarentenaResultado"></div>
+  </section>
+
+</main>
+
+<script>
+(function(){
+  const LS_KEY = 'gatekeeper_painel_base_url';
+  let BASE_URL = '';
+  try { BASE_URL = localStorage.getItem(LS_KEY) || 'https://gatekeeper-mail-real-teste.onrender.com'; }
+  catch(e){ BASE_URL = 'https://gatekeeper-mail-real-teste.onrender.com'; }
+
+  const $ = (id) => document.getElementById(id);
+  $('baseUrlInput').value = BASE_URL;
+
+  // ---- Toast ----
+  function toast(msg, isErr){
+    const el = document.createElement('div');
+    el.className = 'toast' + (isErr ? ' err' : '');
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(()=>el.remove(), 5000);
+  }
+
+  // ---- Settings drawer ----
+  $('settingsToggle').addEventListener('click', ()=> $('settingsDrawer').classList.toggle('open'));
+  $('saveSettingsBtn').addEventListener('click', ()=>{
+    BASE_URL = $('baseUrlInput').value.trim().replace(/\/$/, '');
+    try{ localStorage.setItem(LS_KEY, BASE_URL); }catch(e){}
+    toast('Servidor atualizado.');
+    checarConexao();
+    carregarResumo();
+  });
+
+  // ---- Tabs ----
+  document.querySelectorAll('.tab-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+      btn.classList.add('active');
+      $('panel-' + btn.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ---- Fetch helper ----
+  async function chamar(path, params){
+    const url = new URL(BASE_URL + path);
+    Object.entries(params || {}).forEach(([k,v]) => { if (v !== undefined && v !== '') url.searchParams.set(k, v); });
+    const resp = await fetch(url.toString());
+    let data;
+    try { data = await resp.json(); } catch(e){ throw new Error('Resposta inválida do servidor (HTTP ' + resp.status + ')'); }
+    if (!resp.ok && !data) throw new Error('Erro HTTP ' + resp.status);
+    return data;
+  }
+
+  function setLoading(btn, loading, originalText){
+    if (loading){
+      btn.dataset.orig = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> processando…';
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = btn.dataset.orig || originalText;
+    }
+  }
+
+  // ---- Conexão ----
+  async function checarConexao(){
+    const dot = $('connDot'), label = $('connLabel');
+    dot.className = 'status-dot';
+    label.textContent = 'verificando…';
+    try{
+      const data = await chamar('/api/painel/resumo', {});
+      if (data.ok){
+        dot.classList.add('ok');
+        label.textContent = 'conectado — ' + data.conta_email;
+      } else {
+        dot.classList.add('fail');
+        label.textContent = data.error || 'erro de conexão';
+      }
+    }catch(e){
+      dot.classList.add('fail');
+      label.textContent = 'sem conexão com o servidor';
+    }
+  }
+
+  // ---- Resumo ----
+  async function carregarResumo(){
+    $('resumoErro').style.display = 'none';
+    try{
+      const data = await chamar('/api/painel/resumo', {});
+      if (!data.ok){ throw new Error(data.error || 'Falha ao carregar resumo'); }
+      $('valConta').textContent = data.conta_email || '—';
+      $('valConta').style.fontSize = '1.1rem';
+      $('valInbox').textContent = data.total_caixa_de_entrada ?? '—';
+      $('valInstitucional').textContent = data.total_alerta_institucional ?? '—';
+      $('valGeral').textContent = data.total_geral ?? '—';
+      checarConexao();
+    }catch(e){
+      $('resumoErro').style.display = 'block';
+      $('resumoErro').textContent = 'Não foi possível carregar: ' + e.message;
+    }
+  }
+  $('btnAtualizarResumo').addEventListener('click', carregarResumo);
+
+  // ---- Organizar ----
+  function renderOrganizar(data){
+    if (!data.ok){
+      $('organizarResultado').innerHTML = '<div class="result-box"><h3>Erro</h3><p class="empty">' + (data.error || 'Falha desconhecida') + '</p></div>';
+      return;
+    }
+    const mantidos = data.mantidos_na_caixa_de_entrada || [];
+    const movidos = data.movidos_para_quarentena || [];
+    const pillModo = data.modo && data.modo.startsWith('REAL') ? 'pill-alert' : 'pill-brass';
+    let html = '<div class="result-box">';
+    html += '<h3>Resultado <span class="pill ' + pillModo + '" style="margin-left:8px;">' + (data.modo || '') + '</span></h3>';
+    html += '<p style="font-size:0.85rem;color:var(--bone-dim);">Analisadas nesta execução: ' + (data.mensagens_analisadas_nesta_execucao ?? '—') + ' · Restam: ' + (data.restam_para_processar ?? '—') + '</p>';
+    html += '<table><thead><tr><th>Mantidos na entrada (' + mantidos.length + ')</th><th>Movidos p/ quarentena (' + movidos.length + ')</th></tr></thead><tbody>';
+    const max = Math.max(mantidos.length, movidos.length);
+    for (let i=0; i<Math.min(max, 50); i++){
+      const m = mantidos[i] ? (mantidos[i].de + ' — ' + (mantidos[i].assunto || '(sem assunto)')) : '';
+      const q = movidos[i] ? (movidos[i].de + ' — ' + (movidos[i].assunto || '(sem assunto)')) : '';
+      html += '<tr><td>' + esc(m) + '</td><td>' + esc(q) + '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+    $('organizarResultado').innerHTML = html;
+  }
+
+  $('btnOrganizarSimular').addEventListener('click', async ()=>{
+    const btn = $('btnOrganizarSimular');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/organize', { limite: $('orgLimite').value, reprocessar_tudo: $('orgReprocessar').checked ? 'sim' : '' });
+      renderOrganizar(data);
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Simular');
+  });
+
+  $('btnOrganizarReal').addEventListener('click', async ()=>{
+    if (!confirm('Isso vai mover e-mails de verdade na conta real. Confirma?')) return;
+    const btn = $('btnOrganizarReal');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/organize', { limite: $('orgLimite').value, reprocessar_tudo: $('orgReprocessar').checked ? 'sim' : '', confirmar: 'sim' });
+      renderOrganizar(data);
+      toast('Organização real concluída.');
+      carregarResumo();
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Rodar de verdade');
+  });
+
+  // ---- Sugestões / Aprovação ----
+  let ultimasSugestoes = [];
+
+  function renderSugestoes(data){
+    if (!data.ok){
+      $('sugestoesResultado').innerHTML = '<div class="result-box"><p class="empty">' + (data.error || 'Falha ao buscar sugestões') + '</p></div>';
+      return;
+    }
+    ultimasSugestoes = data.sugestoes || [];
+    let html = '<div class="result-box"><h3>' + data.total_de_destinatarios_unicos + ' destinatários únicos (de ' + data.total_de_enviados_analisados + ' enviados analisados)</h3>';
+    html += '<table><thead><tr><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th></tr></thead><tbody>';
+    ultimasSugestoes.forEach(s=>{
+      const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
+      html += '<tr><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    $('sugestoesResultado').innerHTML = html;
+  }
+
+  function renderAprovacao(data){
+    if (!data.ok){
+      $('sugestoesResultado').innerHTML = '<div class="result-box"><p class="empty">' + (data.error || 'Falha ao aprovar') + '</p></div>';
+      return;
+    }
+    const pillModo = data.modo && data.modo.startsWith('REAL') ? 'pill-alert' : 'pill-brass';
+    let html = '<div class="result-box"><h3>Resultado <span class="pill ' + pillModo + '" style="margin-left:8px;">' + data.modo + '</span></h3>';
+    const lista = data.aprovados || data.seriam_aprovados || [];
+    html += '<p style="font-size:0.85rem;color:var(--bone-dim);">' + lista.length + ' e-mail(s): ' + esc(lista.join(', ') || '—') + '</p>';
+    if (data.falharam && data.falharam.length){
+      html += '<h3 style="color:var(--alert);margin-top:16px;">Falharam (' + data.falharam.length + ')</h3>';
+      html += '<table><thead><tr><th>E-mail</th><th>Erro</th></tr></thead><tbody>';
+      data.falharam.forEach(f=>{ html += '<tr><td>' + esc(f.email) + '</td><td>' + esc(f.erro) + '</td></tr>'; });
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    $('sugestoesResultado').innerHTML = html;
+  }
+
+  $('btnBuscarSugestoes').addEventListener('click', async ()=>{
+    const btn = $('btnBuscarSugestoes');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/sugestoes', { limite: $('sugLimite').value });
+      renderSugestoes(data);
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Buscar sugestões');
+  });
+
+  $('btnAprovarSimular').addEventListener('click', async ()=>{
+    const btn = $('btnAprovarSimular');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/sugestoes/aprovar-todos', { limite: $('sugLimite').value });
+      renderAprovacao(data);
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Simular aprovação total');
+  });
+
+  $('btnAprovarReal').addEventListener('click', async ()=>{
+    if (!confirm('Isso vai aprovar remetentes de verdade na Lista Branca real. Confirma?')) return;
+    const btn = $('btnAprovarReal');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/sugestoes/aprovar-todos', { limite: $('sugLimite').value, confirmar: 'sim' });
+      renderAprovacao(data);
+      toast('Aprovação real concluída.');
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Aprovar todos de verdade');
+  });
+
+  // ---- Quarentena ----
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function renderQuarentena(data){
+    if (!data.ok){
+      $('quarentenaResultado').innerHTML = '<div class="result-box"><p class="empty">' + (data.error || 'Falha ao carregar quarentena') + '</p></div>';
+      return;
+    }
+    const msgs = data.mensagens || [];
+    if (!msgs.length){
+      $('quarentenaResultado').innerHTML = '<div class="empty">Quarentena vazia no momento.</div>';
+      return;
+    }
+    let html = '<div class="result-box"><h3>' + data.total + ' mensagem(ns)</h3>';
+    html += '<table><thead><tr><th>De</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
+    msgs.forEach((m, i) => {
+      html += '<tr id="qrow-' + i + '"><td>' + esc(m.de || '') + '</td><td>' + esc(m.assunto || '') + '</td>' +
+        '<td><span class="pill ' + (m.categoria === 'institucional' ? 'pill-alert' : 'pill-brass') + '">' + esc(m.categoria || '') + '</span></td>' +
+        '<td><button class="btn btn-ghost btn-sm" data-ver="' + i + '">Ver</button> ' +
+        '<button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button></td></tr>' +
+        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="4"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
+    });
+    html += '</tbody></table></div>';
+    $('quarentenaResultado').innerHTML = html;
+
+    document.querySelectorAll('[data-ver]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const i = btn.dataset.ver;
+        const m = msgs[i];
+        const row = $('qbody-' + i);
+        const content = $('qcontent-' + i);
+        if (row.style.display !== 'none'){ row.style.display = 'none'; return; }
+        setLoading(btn, true);
+        try{
+          const dados = await chamar('/quarentena/ver', { id: m.id, pasta: m.pasta });
+          if (dados.ok){
+            content.textContent = dados.corpo_seguro + (dados.anexos_encontrados_mas_nao_baixados && dados.anexos_encontrados_mas_nao_baixados.length ? '\n\n[Anexos não baixados: ' + dados.anexos_encontrados_mas_nao_baixados.join(', ') + ']' : '');
+            row.style.display = '';
+          } else {
+            toast('Erro: ' + dados.error, true);
+          }
+        }catch(e){ toast('Erro: ' + e.message, true); }
+        setLoading(btn, false, 'Ver');
+      });
+    });
+
+    document.querySelectorAll('[data-apagar]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const i = btn.dataset.apagar;
+        const m = msgs[i];
+        if (!confirm('Apagar permanentemente este e-mail (' + m.de + ')?')) return;
+        setLoading(btn, true);
+        try{
+          const dados = await chamar('/quarentena/apagar', { id: m.id, pasta: m.pasta, confirmar: 'sim' });
+          if (dados.ok){
+            toast('E-mail apagado.');
+            document.getElementById('qrow-' + i).remove();
+            const bodyRow = document.getElementById('qbody-' + i); if (bodyRow) bodyRow.remove();
+          } else {
+            toast('Erro: ' + dados.error, true);
+          }
+        }catch(e){ toast('Erro: ' + e.message, true); }
+        setLoading(btn, false, 'Apagar');
+      });
+    });
+  }
+
+  $('btnAtualizarQuarentena').addEventListener('click', async ()=>{
+    const btn = $('btnAtualizarQuarentena');
+    setLoading(btn, true);
+    try{
+      const data = await chamar('/quarentena', {});
+      renderQuarentena(data);
+    }catch(e){ toast('Erro: ' + e.message, true); }
+    setLoading(btn, false, 'Atualizar lista');
+  });
+
+  // ---- Init ----
+  checarConexao();
+  carregarResumo();
+})();
+</script>
+</body>
+</html>
