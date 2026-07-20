@@ -375,14 +375,20 @@
     html += '<label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="lbSelTodos"> selecionar todos</label>';
     html += '<span id="lbSelContagem" style="font-size:0.78rem;color:var(--bone-dim);">0 selecionado(s)</span>';
     html += '<button class="btn btn-danger btn-sm" id="lbBtnRemoverSel" disabled>Remover e excluir selecionados</button>';
+    html += '<button class="btn btn-danger btn-sm" id="lbBtnBloquearNomesSel" disabled>Bloquear nome(s) selecionados</button>';
+    html += '<button class="btn btn-danger btn-sm" id="lbBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:30px;"></th><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
+    html += '<table><thead><tr><th style="width:30px;"></th><th>E-mail</th><th>Nome de exibição</th><th>Domínio</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
     ultimasSugestoes.forEach((s, i)=>{
       const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
       const acao = s.ja_esta_na_lista_branca ? '<button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button>' : '';
       const chk = s.ja_esta_na_lista_branca ? '<input type="checkbox" class="lbchk" data-idx="' + i + '">' : '';
-      html += '<tr id="lbrow-' + i + '"><td>' + chk + '</td><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
+      const nome = s.nome || '';
+      const nomeCel = nome ? '<span style="cursor:pointer;text-decoration:underline dotted;" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>' : '<span style="color:var(--bone-dim);">—</span>';
+      const dominio = (s.email || '').split('@')[1] || '';
+      const dominioCel = '<span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span>';
+      html += '<tr id="lbrow-' + i + '"><td>' + chk + '</td><td>' + esc(s.email) + '</td><td>' + nomeCel + '</td><td>' + dominioCel + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
     });
     html += '</tbody></table></div>';
     $('sugestoesResultado').innerHTML = html;
@@ -395,6 +401,8 @@
       const n = linhasSelecionadas().length;
       $('lbSelContagem').textContent = n + ' selecionado(s)';
       $('lbBtnRemoverSel').disabled = n === 0;
+      $('lbBtnBloquearNomesSel').disabled = n === 0;
+      $('lbBtnBloquearDominiosSel').disabled = n === 0;
     }
 
     document.querySelectorAll('.lbchk').forEach(chk=>{
@@ -404,6 +412,26 @@
     $('lbSelTodos').addEventListener('change', (e)=>{
       document.querySelectorAll('.lbchk').forEach(chk=>{ chk.checked = e.target.checked; });
       atualizarBarraSelecao();
+    });
+
+    document.querySelectorAll('[data-selnome]').forEach(span=>{
+      span.addEventListener('click', ()=>{
+        const nome = ultimasSugestoes[span.dataset.selnome].nome;
+        document.querySelectorAll('.lbchk').forEach(chk=>{
+          if (ultimasSugestoes[chk.dataset.idx].nome === nome) chk.checked = true;
+        });
+        atualizarBarraSelecao();
+      });
+    });
+
+    document.querySelectorAll('[data-seldominio]').forEach(span=>{
+      span.addEventListener('click', ()=>{
+        const dominio = (ultimasSugestoes[span.dataset.seldominio].email || '').split('@')[1] || '';
+        document.querySelectorAll('.lbchk').forEach(chk=>{
+          if (((ultimasSugestoes[chk.dataset.idx].email || '').split('@')[1] || '') === dominio) chk.checked = true;
+        });
+        atualizarBarraSelecao();
+      });
     });
 
     function removerLinhas(indices){
@@ -430,6 +458,40 @@
       toast(sucesso + ' removido(s)/bloqueado(s)' + (falha ? ', ' + falha + ' falharam' : '') + '.', falha > 0);
       removerLinhas(indices);
       setLoading(btn, false, 'Remover e excluir selecionados');
+    });
+
+    $('lbBtnBloquearNomesSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      const nomesUnicos = [...new Set(indices.map(i => ultimasSugestoes[i].nome).filter(n => n))];
+      if (!nomesUnicos.length){ toast('Nenhum selecionado tem nome de exibição para bloquear.', true); return; }
+      if (!confirm('Bloquear permanentemente ' + nomesUnicos.length + ' nome(s) de exibição — qualquer e-mail futuro com esse nome será apagado direto, não importa o endereço usado. Ação definitiva. Confirma?')) return;
+      const btn = $('lbBtnBloquearNomesSel');
+      setLoading(btn, true);
+      for (const nm of nomesUnicos){
+        try{ await chamar('/whitelist/bloquear-nome', { nome: nm, confirmar: 'sim' }); }catch(e){}
+      }
+      toast(nomesUnicos.length + ' nome(s) bloqueado(s) permanentemente.');
+      const paraRemover = ultimasSugestoes.map((s,i)=>i).filter(i => nomesUnicos.includes(ultimasSugestoes[i].nome));
+      removerLinhas(paraRemover);
+      setLoading(btn, false, 'Bloquear nome(s) selecionados');
+    });
+
+    $('lbBtnBloquearDominiosSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      const dominiosUnicos = [...new Set(indices.map(i => (ultimasSugestoes[i].email || '').split('@')[1]).filter(d => d))];
+      if (!dominiosUnicos.length){ toast('Nenhum domínio identificado nos selecionados.', true); return; }
+      if (!confirm('Bloquear permanentemente o(s) domínio(s): ' + dominiosUnicos.join(', ') + '?\n\nISSO DERRUBA TODOS os remetentes desses domínios de uma vez, inclusive endereços que você ainda não conhece. Ação definitiva e de amplo alcance. Confirma?')) return;
+      const btn = $('lbBtnBloquearDominiosSel');
+      setLoading(btn, true);
+      for (const dm of dominiosUnicos){
+        try{ await chamar('/whitelist/bloquear-dominio', { dominio: dm, confirmar: 'sim' }); }catch(e){}
+      }
+      toast(dominiosUnicos.length + ' domínio(s) bloqueado(s) permanentemente.');
+      const paraRemover = ultimasSugestoes.map((s,i)=>i).filter(i => dominiosUnicos.includes((ultimasSugestoes[i].email || '').split('@')[1]));
+      removerLinhas(paraRemover);
+      setLoading(btn, false, 'Bloquear domínio(s) selecionados');
     });
 
     document.querySelectorAll('[data-remover]').forEach(btn=>{
@@ -525,21 +587,24 @@
     html += '<button class="btn btn-danger btn-sm" id="qBtnApagarSel" disabled>Apagar selecionados</button>';
     html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearEmailsSel" disabled>Bloquear e-mail(s) selecionados</button>';
     html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearNomesSel" disabled>Bloquear nome(s) selecionados</button>';
+    html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:30px;"></th><th>De</th><th>Nome de exibição</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
+    html += '<table><thead><tr><th style="width:30px;"></th><th>De</th><th>Nome de exibição</th><th>Domínio</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
     msgs.forEach((m, i) => {
       const nome = m.nome || '';
+      const dominio = (m.de || '').split('@')[1] || '';
       html += '<tr id="qrow-' + i + '">' +
         '<td><input type="checkbox" class="qchk" data-idx="' + i + '"></td>' +
         '<td><span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-selemail="' + i + '" title="Selecionar todos com este e-mail">' + esc(m.de || '') + '</span></td>' +
         '<td>' + (nome ? '<span style="cursor:pointer;text-decoration:underline dotted;" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>' : '<span style="color:var(--bone-dim);">—</span>') + '</td>' +
+        '<td><span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span></td>' +
         '<td>' + esc(m.assunto || '') + '</td>' +
         '<td><span class="pill ' + (m.categoria === 'institucional' ? 'pill-alert' : 'pill-brass') + '">' + esc(m.categoria || '') + '</span></td>' +
         '<td><button class="btn btn-ghost btn-sm" data-ver="' + i + '">Ver</button> ' +
         '<button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button> ' +
         '<button class="btn btn-danger btn-sm" data-bloquear="' + i + '">Bloquear remetente</button></td></tr>' +
-        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="6"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
+        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="7"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
     });
     html += '</tbody></table></div>';
     $('quarentenaResultado').innerHTML = html;
@@ -554,6 +619,7 @@
       $('qBtnApagarSel').disabled = n === 0;
       $('qBtnBloquearEmailsSel').disabled = n === 0;
       $('qBtnBloquearNomesSel').disabled = n === 0;
+      $('qBtnBloquearDominiosSel').disabled = n === 0;
     }
 
     document.querySelectorAll('.qchk').forEach(chk=>{
@@ -580,6 +646,16 @@
         const nome = msgs[span.dataset.selnome].nome;
         document.querySelectorAll('.qchk').forEach(chk=>{
           if (msgs[chk.dataset.idx].nome === nome) chk.checked = true;
+        });
+        atualizarBarraSelecao();
+      });
+    });
+
+    document.querySelectorAll('[data-seldominio]').forEach(span=>{
+      span.addEventListener('click', ()=>{
+        const dominio = (msgs[span.dataset.seldominio].de || '').split('@')[1] || '';
+        document.querySelectorAll('.qchk').forEach(chk=>{
+          if (((msgs[chk.dataset.idx].de || '').split('@')[1] || '') === dominio) chk.checked = true;
         });
         atualizarBarraSelecao();
       });
@@ -645,6 +721,23 @@
       const paraRemover = msgs.map((m,i)=>i).filter(i => nomesUnicos.includes(msgs[i].nome));
       removerLinhas(paraRemover);
       setLoading(btn, false, 'Bloquear nome(s) selecionados');
+    });
+
+    $('qBtnBloquearDominiosSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      const dominiosUnicos = [...new Set(indices.map(i => (msgs[i].de || '').split('@')[1]).filter(d => d))];
+      if (!dominiosUnicos.length){ toast('Nenhum domínio identificado nos selecionados.', true); return; }
+      if (!confirm('Bloquear permanentemente o(s) domínio(s): ' + dominiosUnicos.join(', ') + '?\n\nISSO DERRUBA TODOS os remetentes desses domínios de uma vez, inclusive endereços que você ainda não conhece. Ação definitiva e de amplo alcance. Confirma?')) return;
+      const btn = $('qBtnBloquearDominiosSel');
+      setLoading(btn, true);
+      for (const dm of dominiosUnicos){
+        try{ await chamar('/whitelist/bloquear-dominio', { dominio: dm, confirmar: 'sim' }); }catch(e){}
+      }
+      toast(dominiosUnicos.length + ' domínio(s) bloqueado(s) permanentemente.');
+      const paraRemover = msgs.map((m,i)=>i).filter(i => dominiosUnicos.includes((msgs[i].de || '').split('@')[1]));
+      removerLinhas(paraRemover);
+      setLoading(btn, false, 'Bloquear domínio(s) selecionados');
     });
 
     document.querySelectorAll('[data-ver]').forEach(btn=>{
