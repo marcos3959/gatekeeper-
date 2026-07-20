@@ -369,15 +369,68 @@
       return;
     }
     ultimasSugestoes = data.sugestoes || [];
+
     let html = '<div class="result-box"><h3>' + data.total_de_destinatarios_unicos + ' destinatários únicos (de ' + data.total_de_enviados_analisados + ' enviados analisados)</h3>';
-    html += '<table><thead><tr><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
+    html += '<div id="lbBarraSelecao" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;background:var(--navy-deep);border:1px solid var(--navy-line);">';
+    html += '<label style="display:flex;align-items:center;gap:6px;font-size:0.82rem;"><input type="checkbox" id="lbSelTodos"> selecionar todos</label>';
+    html += '<span id="lbSelContagem" style="font-size:0.78rem;color:var(--bone-dim);">0 selecionado(s)</span>';
+    html += '<button class="btn btn-danger btn-sm" id="lbBtnRemoverSel" disabled>Remover e excluir selecionados</button>';
+    html += '</div>';
+
+    html += '<table><thead><tr><th style="width:30px;"></th><th>E-mail</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
     ultimasSugestoes.forEach((s, i)=>{
       const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
       const acao = s.ja_esta_na_lista_branca ? '<button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button>' : '';
-      html += '<tr><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
+      const chk = s.ja_esta_na_lista_branca ? '<input type="checkbox" class="lbchk" data-idx="' + i + '">' : '';
+      html += '<tr id="lbrow-' + i + '"><td>' + chk + '</td><td>' + esc(s.email) + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
     });
     html += '</tbody></table></div>';
     $('sugestoesResultado').innerHTML = html;
+
+    function linhasSelecionadas(){
+      return Array.from(document.querySelectorAll('.lbchk:checked')).map(c => parseInt(c.dataset.idx));
+    }
+
+    function atualizarBarraSelecao(){
+      const n = linhasSelecionadas().length;
+      $('lbSelContagem').textContent = n + ' selecionado(s)';
+      $('lbBtnRemoverSel').disabled = n === 0;
+    }
+
+    document.querySelectorAll('.lbchk').forEach(chk=>{
+      chk.addEventListener('change', atualizarBarraSelecao);
+    });
+
+    $('lbSelTodos').addEventListener('change', (e)=>{
+      document.querySelectorAll('.lbchk').forEach(chk=>{ chk.checked = e.target.checked; });
+      atualizarBarraSelecao();
+    });
+
+    function removerLinhas(indices){
+      indices.forEach(i=>{
+        const row = document.getElementById('lbrow-' + i);
+        if (row) row.remove();
+      });
+      atualizarBarraSelecao();
+    }
+
+    $('lbBtnRemoverSel').addEventListener('click', async ()=>{
+      const indices = linhasSelecionadas();
+      if (!indices.length) return;
+      if (!confirm('Remover e BLOQUEAR permanentemente ' + indices.length + ' remetente(s) selecionado(s)?\n\nA partir de agora, e-mails desses remetentes serão apagados direto, sem passar por Quarentena. Ação definitiva.')) return;
+      const btn = $('lbBtnRemoverSel');
+      setLoading(btn, true);
+      let sucesso = 0, falha = 0;
+      for (const i of indices){
+        try{
+          const dados = await chamar('/whitelist/remover-e-bloquear', { email: ultimasSugestoes[i].email, confirmar: 'sim' });
+          if (dados.ok) sucesso++; else falha++;
+        }catch(e){ falha++; }
+      }
+      toast(sucesso + ' removido(s)/bloqueado(s)' + (falha ? ', ' + falha + ' falharam' : '') + '.', falha > 0);
+      removerLinhas(indices);
+      setLoading(btn, false, 'Remover e excluir selecionados');
+    });
 
     document.querySelectorAll('[data-remover]').forEach(btn=>{
       btn.addEventListener('click', async ()=>{
