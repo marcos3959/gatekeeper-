@@ -101,9 +101,24 @@
 
   .result-box{background:var(--navy-surface);border:1px solid var(--navy-line);padding:20px;margin-top:20px;}
   .barra-flutuante{position:sticky;top:66px;z-index:15;box-shadow:0 8px 16px rgba(0,0,0,0.4);}
+
+  .msg-list{display:flex;flex-direction:column;}
+  .msg-card{padding:14px 4px;border-bottom:1px solid var(--navy-line);}
+  .msg-card:hover{background:rgba(255,255,255,0.02);}
+  .msg-card-top{display:flex;align-items:flex-start;gap:10px;}
+  .msg-check{flex-shrink:0;padding-top:3px;}
+  .msg-card-main{flex:1;min-width:0;}
+  .msg-card-from{font-size:0.82rem;color:var(--bone-dim);display:flex;flex-wrap:wrap;align-items:center;gap:4px;}
+  .msg-sep{opacity:0.4;}
+  .msg-link{cursor:pointer;text-decoration:underline dotted;color:var(--bone-dim);}
+  .msg-link:hover{color:var(--brass);}
+  .msg-dominio{color:var(--bone-dim);}
+  .msg-card-subject{font-size:0.95rem;color:var(--bone);margin-top:4px;}
+  .msg-card-pill{flex-shrink:0;white-space:nowrap;}
+  .msg-card-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0 30px;}
   .result-box h3{font-size:0.95rem;margin-bottom:12px;color:var(--brass);}
   .empty{color:var(--bone-dim);font-size:0.88rem;padding:20px 0;}
-  .msg-body{white-space:pre-wrap;background:var(--navy-deep);border:1px solid var(--navy-line);padding:14px;margin-top:10px;font-size:0.84rem;max-height:320px;overflow-y:auto;}
+  .msg-body{white-space:pre-wrap;background:var(--navy-deep);border:1px solid var(--navy-line);padding:14px;margin:10px 0 0 30px;font-size:0.84rem;max-height:320px;overflow-y:auto;}
   .warn-note{font-size:0.78rem;color:var(--alert);margin-top:8px;}
   .toast{position:fixed;bottom:24px;right:24px;background:var(--navy-surface);border:1px solid var(--navy-line);border-left:3px solid var(--sage);padding:14px 18px;font-size:0.86rem;max-width:340px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,0.3);}
   .toast.err{border-left-color:var(--alert);}
@@ -418,18 +433,31 @@
     html += '<button class="btn btn-danger btn-sm" id="lbBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:28px;"></th><th style="width:22%;">E-mail</th><th style="width:16%;">Nome de exibição</th><th style="width:14%;">Domínio</th><th style="width:14%;">Vezes que você escreveu</th><th style="width:10%;">Status</th><th style="width:20%;">Ação</th></tr></thead><tbody>';
+    html += '<div class="msg-list">';
     ultimasSugestoes.forEach((s, i)=>{
-      const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
-      const acao = s.ja_esta_na_lista_branca ? '<button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button>' : '';
-      const chk = s.ja_esta_na_lista_branca ? '<input type="checkbox" class="lbchk" data-idx="' + i + '">' : '';
+      const naLista = s.ja_esta_na_lista_branca;
+      const pill = naLista ? '<span class="pill pill-sage msg-card-pill">na lista branca</span>' : '<span class="pill pill-brass msg-card-pill">pendente</span>';
       const nome = s.nome || '';
-      const nomeCel = nome ? '<span style="cursor:pointer;text-decoration:underline dotted;" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>' : '<span style="color:var(--bone-dim);">—</span>';
       const dominio = (s.email || '').split('@')[1] || '';
-      const dominioCel = '<span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span>';
-      html += '<tr id="lbrow-' + i + '"><td>' + chk + '</td><td>' + esc(s.email) + '</td><td>' + nomeCel + '</td><td>' + dominioCel + '</td><td>' + s.vezes_que_voce_escreveu + '</td><td>' + pill + '</td><td>' + acao + '</td></tr>';
+      html += '<div class="msg-card" id="lbrow-' + i + '">';
+      html += '  <div class="msg-card-top">';
+      html += '    <label class="msg-check">' + (naLista ? '<input type="checkbox" class="lbchk" data-idx="' + i + '">' : '') + '</label>';
+      html += '    <div class="msg-card-main">';
+      html += '      <div class="msg-card-subject mono">' + esc(s.email) + '</div>';
+      html += '      <div class="msg-card-from">';
+      if (nome) html += '        <span class="msg-link" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span><span class="msg-sep">·</span>';
+      html += '        <span class="mono msg-link msg-dominio" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span>';
+      html += '        <span class="msg-sep">·</span><span>' + s.vezes_que_voce_escreveu + ' e-mail(s) enviados</span>';
+      html += '      </div>';
+      html += '    </div>';
+      html += '    ' + pill;
+      html += '  </div>';
+      if (naLista) {
+        html += '  <div class="msg-card-actions"><button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button></div>';
+      }
+      html += '</div>';
     });
-    html += '</tbody></table></div>';
+    html += '</div></div>';
     $('sugestoesResultado').innerHTML = html;
 
     function linhasSelecionadas(){
@@ -629,23 +657,33 @@
     html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:28px;"></th><th style="width:16%;">De</th><th style="width:14%;">Nome de exibição</th><th style="width:12%;">Domínio</th><th style="width:24%;">Assunto</th><th style="width:8%;">Tipo</th><th style="width:24%;">Ações</th></tr></thead><tbody>';
+    html += '<div class="msg-list">';
     msgs.forEach((m, i) => {
       const nome = m.nome || '';
       const dominio = (m.de || '').split('@')[1] || '';
-      html += '<tr id="qrow-' + i + '">' +
-        '<td><input type="checkbox" class="qchk" data-idx="' + i + '"></td>' +
-        '<td><span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-selemail="' + i + '" title="Selecionar todos com este e-mail">' + esc(m.de || '') + '</span></td>' +
-        '<td>' + (nome ? '<span style="cursor:pointer;text-decoration:underline dotted;" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>' : '<span style="color:var(--bone-dim);">—</span>') + '</td>' +
-        '<td><span class="mono" style="cursor:pointer;text-decoration:underline dotted;" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span></td>' +
-        '<td>' + esc(m.assunto || '') + '</td>' +
-        '<td><span class="pill ' + (m.categoria === 'institucional' ? 'pill-alert' : 'pill-brass') + '">' + esc(m.categoria || '') + '</span></td>' +
-        '<td><button class="btn btn-ghost btn-sm" data-ver="' + i + '">Ver</button> ' +
-        '<button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button> ' +
-        '<button class="btn btn-danger btn-sm" data-bloquear="' + i + '">Bloquear remetente</button></td></tr>' +
-        '<tr id="qbody-' + i + '" style="display:none;"><td colspan="7"><div class="msg-body" id="qcontent-' + i + '"></div></td></tr>';
+      const pillClass = m.categoria === 'institucional' ? 'pill-alert' : 'pill-brass';
+      html += '<div class="msg-card" id="qrow-' + i + '">';
+      html += '  <div class="msg-card-top">';
+      html += '    <label class="msg-check"><input type="checkbox" class="qchk" data-idx="' + i + '"></label>';
+      html += '    <div class="msg-card-main">';
+      html += '      <div class="msg-card-from">';
+      html += '        <span class="mono msg-link" data-selemail="' + i + '" title="Selecionar todos com este e-mail">' + esc(m.de || '') + '</span>';
+      if (nome) html += '        <span class="msg-sep">·</span><span class="msg-link" data-selnome="' + i + '" title="Selecionar todos com este nome">' + esc(nome) + '</span>';
+      html += '        <span class="msg-sep">·</span><span class="mono msg-link msg-dominio" data-seldominio="' + i + '" title="Selecionar todos deste domínio">' + esc(dominio) + '</span>';
+      html += '      </div>';
+      html += '      <div class="msg-card-subject">' + esc(m.assunto || '(sem assunto)') + '</div>';
+      html += '    </div>';
+      html += '    <span class="pill ' + pillClass + ' msg-card-pill">' + esc(m.categoria || '') + '</span>';
+      html += '  </div>';
+      html += '  <div class="msg-card-actions">';
+      html += '    <button class="btn btn-ghost btn-sm" data-ver="' + i + '">Ver</button>';
+      html += '    <button class="btn btn-danger btn-sm" data-apagar="' + i + '">Apagar</button>';
+      html += '    <button class="btn btn-danger btn-sm" data-bloquear="' + i + '">Bloquear remetente</button>';
+      html += '  </div>';
+      html += '  <div class="msg-body" id="qcontent-' + i + '" style="display:none;" data-bodywrap="qbody-' + i + '"></div>';
+      html += '</div>';
     });
-    html += '</tbody></table></div>';
+    html += '</div></div>';
     $('quarentenaResultado').innerHTML = html;
 
     function linhasSelecionadas(){
@@ -704,8 +742,6 @@
       indices.forEach(i=>{
         const row = document.getElementById('qrow-' + i);
         if (row) row.remove();
-        const bodyRow = document.getElementById('qbody-' + i);
-        if (bodyRow) bodyRow.remove();
       });
       atualizarBarraSelecao();
     }
@@ -783,15 +819,14 @@
       btn.addEventListener('click', async ()=>{
         const i = btn.dataset.ver;
         const m = msgs[i];
-        const row = $('qbody-' + i);
         const content = $('qcontent-' + i);
-        if (row.style.display !== 'none'){ row.style.display = 'none'; return; }
+        if (content.style.display !== 'none'){ content.style.display = 'none'; return; }
         setLoading(btn, true);
         try{
           const dados = await chamar('/quarentena/ver', { id: m.id, pasta: m.pasta });
           if (dados.ok){
             content.textContent = dados.corpo_seguro + (dados.anexos_encontrados_mas_nao_baixados && dados.anexos_encontrados_mas_nao_baixados.length ? '\n\n[Anexos não baixados: ' + dados.anexos_encontrados_mas_nao_baixados.join(', ') + ']' : '');
-            row.style.display = '';
+            content.style.display = '';
           } else {
             toast('Erro: ' + dados.error, true);
           }
