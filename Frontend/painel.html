@@ -89,7 +89,8 @@
   .btn-ghost .spinner, .btn-danger .spinner{border:2px solid rgba(237,234,225,0.25);border-top-color:currentColor;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
-  table{width:100%;border-collapse:collapse;font-size:0.86rem;}
+  table{width:100%;border-collapse:collapse;font-size:0.86rem;table-layout:fixed;}
+  table td, table th{word-wrap:break-word;overflow-wrap:break-word;}
   th{text-align:left;font-family:'IBM Plex Mono',monospace;font-size:0.68rem;letter-spacing:.06em;text-transform:uppercase;color:var(--bone-dim);padding:10px 12px;border-bottom:1px solid var(--navy-line);}
   td{padding:10px 12px;border-bottom:1px solid var(--navy-line);vertical-align:top;}
   tr:hover td{background:rgba(255,255,255,0.02);}
@@ -417,7 +418,7 @@
     html += '<button class="btn btn-danger btn-sm" id="lbBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:30px;"></th><th>E-mail</th><th>Nome de exibição</th><th>Domínio</th><th>Vezes que você escreveu</th><th>Status</th><th>Ação</th></tr></thead><tbody>';
+    html += '<table><thead><tr><th style="width:28px;"></th><th style="width:22%;">E-mail</th><th style="width:16%;">Nome de exibição</th><th style="width:14%;">Domínio</th><th style="width:14%;">Vezes que você escreveu</th><th style="width:10%;">Status</th><th style="width:20%;">Ação</th></tr></thead><tbody>';
     ultimasSugestoes.forEach((s, i)=>{
       const pill = s.ja_esta_na_lista_branca ? '<span class="pill pill-sage">na lista branca</span>' : '<span class="pill pill-brass">pendente</span>';
       const acao = s.ja_esta_na_lista_branca ? '<button class="btn btn-danger btn-sm" data-remover="' + i + '">Remover e excluir</button>' : '';
@@ -628,7 +629,7 @@
     html += '<button class="btn btn-danger btn-sm" id="qBtnBloquearDominiosSel" disabled>Bloquear domínio(s) selecionados</button>';
     html += '</div>';
 
-    html += '<table><thead><tr><th style="width:30px;"></th><th>De</th><th>Nome de exibição</th><th>Domínio</th><th>Assunto</th><th>Tipo</th><th>Ações</th></tr></thead><tbody>';
+    html += '<table><thead><tr><th style="width:28px;"></th><th style="width:16%;">De</th><th style="width:14%;">Nome de exibição</th><th style="width:12%;">Domínio</th><th style="width:24%;">Assunto</th><th style="width:8%;">Tipo</th><th style="width:24%;">Ações</th></tr></thead><tbody>';
     msgs.forEach((m, i) => {
       const nome = m.nome || '';
       const dominio = (m.de || '').split('@')[1] || '';
